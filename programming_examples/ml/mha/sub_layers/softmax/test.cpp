@@ -39,9 +39,15 @@ int verify_against_golden(const std::vector<float>& actual, int verbosity) {
     for (int i = 0; i < N; ++i) {
         float ref = golden_output[i];
         float val = actual[i];
+
+        if (std::isnan(val)) {
+            std::cout << "Mismatch at " << i << ": " << val << " is NaN!" << std::endl;
+            errors++;
+            continue;
+        }
+
         if (std::abs(ref - val) > 0.04f) {
-            if (verbosity > 0)
-                std::cout << "Mismatch at " << i << ": " << val << " != " << ref << std::endl;
+            std::cout << "Mismatch at " << i << ": " << val << " != " << ref << std::endl;
             errors++;
         }
     }
