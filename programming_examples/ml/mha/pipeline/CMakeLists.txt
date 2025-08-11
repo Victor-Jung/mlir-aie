@@ -10,15 +10,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
 
 # Configuration variables
 set(heads 1)
-set(S_q 32)
-set(S_kv 32)
-set(d 32)
-set(m 32)
-set(k 32)
-set(n 32)
+set(S_q 16)
+set(S_kv 16)
+set(d 16)
+set(m 16)
+set(k 16)
+set(n 16)
 set(dtype "bf16")
 
-set(verbose 0)
+set(verbose 1)
 set(trace_size 65536)
 set(device_name "npu2")
 set(design_name "mha")
@@ -130,6 +130,7 @@ set(kernel_defines
     "-DDIM_M=${m}" 
     "-DDIM_K=${k}" 
     "-DDIM_N=${n}"
+    # "-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16"
 )
 
 # list(APPEND kernel_defines "-DB_COL_MAJ")
@@ -191,8 +192,8 @@ add_custom_command(
 add_custom_command(
     OUTPUT ${softmax_kernel_obj}
     COMMAND ${kernel_cc} ${kernel_cflags} 
-        -c ${kernels_dir_aie2}/bf16_softmax.cc -o ${softmax_kernel_obj}
-    DEPENDS ${kernels_dir_aie2}/bf16_softmax.cc
+        -c ${kernels_dir}/softmax.cc -o ${softmax_kernel_obj}
+    DEPENDS ${kernels_dir}/softmax.cc
     COMMENT "Compiling AIE kernel: ${softmax_kernel}"
 )
 

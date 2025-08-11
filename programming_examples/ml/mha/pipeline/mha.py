@@ -16,8 +16,6 @@ from aie.iron.device import NPU1Col1, NPU2, Tile
 from aie.iron.controlflow import range_
 from aie.helpers.taplib import TensorTiler2D
 
-from aie.helpers.dialects.ext.scf import if_, else_
-
 base_dir = Path(__file__).parent
 
 dtype_map = {
@@ -152,21 +150,33 @@ def batched_matmul_single_core(
     q_ty = np.ndarray[(m, k), np.dtype[dtype]]
     k_ty = np.ndarray[(k, n), np.dtype[dtype]]
     qk_ty = np.ndarray[(m, n), np.dtype[dtype]]
-
+    s_ty = np.ndarray[(m,), np.dtype[dtype]]
+    
     # AIE Core Function declarations
     func_type = "" if vectorized else "scalar_"
-    # bin_name = f"mm_{m}x{k}x{n}_{dtype_str}_{dtype_str}.o"
     bin_name = "kernels.a"
+    
+    
     zero_kernel = Kernel(
         f"zero_{func_type}{dtype_str}", bin_name, [qk_ty]
     )
-    # matmul_vectorized_func_name = f"matmul_{dtype_str}_{dtype_str}"
-    matmul_vectorized_func_name = "mha_bf16_bf16"
-    print(f"Using matmul function: {matmul_vectorized_func_name}")
-    matmul_kernel = Kernel(
-        matmul_vectorized_func_name,
+    
+    partial_softmax_kernel = Kernel(
+        "partial_softmax",
         bin_name,
-        [q_ty, k_ty, qk_ty, np.int32, np.float32, np.int32, np.int32],
+        [qk_ty, qk_ty, s_ty, np.float32, np.int32, np.int32],
+    )
+    
+    matmul_QK = Kernel(
+        "matmul_bf16_bf16",
+        bin_name,
+        [q_ty, k_ty, qk_ty],
+    )
+    
+    matmul_PV = Kernel(
+        "matmul_PV",
+        bin_name,
+        [qk_ty, k_ty, qk_ty, s_ty],
     )
 
     # AIE-array data movement with object fifos
@@ -202,6 +212,9 @@ def batched_matmul_single_core(
     memA = ObjectFifo(qk_ty, name="memA")
     outA = memA.cons().forward(name="outA", dims_to_stream=q_dims, placement=Tile(col=1, row=1))
     
+    # Scale buffer for partial softmax
+    scaleOF = ObjectFifo(s_ty, name="scaleOF")
+    
     # Output O
     memO = ObjectFifo(qk_ty, name="memO")
     o_dims = None
@@ -223,45 +236,54 @@ def batched_matmul_single_core(
     workerBarriers = []
     workerBarriers.append(WorkerRuntimeBarrier())
 
-    def batched_matmul_qk(of_q, of_k, of_qk_out, zero, mha):
+    def batched_matmul_qk(of_q, of_k, of_qk_out, zero, matmul_QK):
         
-        for _ in range_(tiles) if tiles > 1 else range(1):  # issue #1547
+        for _ in range_(tiles):
             elem_qk_out = of_qk_out.acquire(1)
             zero(elem_qk_out)
 
-            # issue #1547
-            for _ in range_(d_div_k) if d_div_k > 1 else range(1):
-                elem_in_q = of_q.acquire(1)
-                elem_in_k = of_k.acquire(1)
-                mha(elem_in_q, elem_in_k, elem_qk_out, 1, inv_scale, S_q, S_kv)
-                of_q.release(1)
-                of_k.release(1)
+            elem_in_q = of_q.acquire(1)
+            elem_in_k = of_k.acquire(1)
+            
+            matmul_QK(elem_in_q, elem_in_k, elem_qk_out)
+            
+            of_q.release(1)
+            of_k.release(1)
                 
             of_qk_out.release(1)
 
-    def softmax(of_in_a, of_out_b, softmax):
+    def partial_softmax(of_in_a, of_out_b, of_out_scale, softmax):
         
         elt_of_out_b = of_out_b.acquire(1)
         elt_of_in_a = of_in_a.acquire(1)
-        softmax(elt_of_in_a, elt_of_in_a, elt_of_out_b, 2, inv_scale, S_q, S_kv)
+        elt_of_out_scale = of_out_scale.acquire(1)
+        
+        softmax(elt_of_in_a, elt_of_out_b, elt_of_out_scale, inv_scale, S_q, S_kv)
+        
         of_in_a.release(1)
         of_out_b.release(1)
+        of_out_scale.release(1)
     
-    def batched_matmul_av(of_a, of_v, of_o_out, zero, mha):
+    def batched_matmul_av(of_a, of_v, of_scale, of_o_out, zero, matmul_PV):
         
-        for _ in range_(tiles) if tiles > 1 else range(1):  # issue #1547
+        
+        elt_of_out_scale = of_scale.acquire(1)
+        
+        for _ in range_(tiles):
             elem_o_out = of_o_out.acquire(1)
             zero(elem_o_out)
 
-            # issue #1547
-            for _ in range_(d_div_k) if d_div_k > 1 else range(1):
-                elem_in_a = of_a.acquire(1)
-                elem_in_v = of_v.acquire(1)
-                mha(elem_in_a, elem_in_v, elem_o_out, 3, inv_scale, S_q, S_kv)
-                of_a.release(1)
-                of_v.release(1)
+            elem_in_a = of_a.acquire(1)
+            elem_in_v = of_v.acquire(1)
+            
+            matmul_PV(elem_in_a, elem_in_v, elem_o_out, elt_of_out_scale)
+            
+            of_a.release(1)
+            of_v.release(1)
                 
             of_o_out.release(1)
+        
+        of_scale.release(1)
 
     # Create worker from task
     matmul_worker = Worker(
@@ -271,18 +293,19 @@ def batched_matmul_single_core(
             memK.cons(),
             memQK.prod(),
             zero_kernel,
-            matmul_kernel,
+            matmul_QK,
         ], 
         stack_size=0xD00,
         placement=Tile(col=0, row=2)
     )
     
     softmax_worker = Worker(
-        softmax,
+        partial_softmax,
         fn_args = [
             outQK.cons(),
             memA.prod(),
-            matmul_kernel,
+            scaleOF.prod(),
+            partial_softmax_kernel,
         ],
         stack_size=0xD00,
         placement=Tile(col=0, row=3)
@@ -293,9 +316,10 @@ def batched_matmul_single_core(
         fn_args = [
             outA.cons(),
             memV.cons(),
+            scaleOF.cons(),
             memO.prod(),
             zero_kernel,
-            matmul_kernel,
+            matmul_PV,
         ], 
         stack_size=0xD00,
         placement=Tile(col=0, row=4)
