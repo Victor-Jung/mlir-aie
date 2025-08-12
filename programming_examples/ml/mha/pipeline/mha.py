@@ -150,7 +150,7 @@ def batched_matmul_single_core(
     q_ty = np.ndarray[(m, k), np.dtype[dtype]]
     k_ty = np.ndarray[(k, n), np.dtype[dtype]]
     qk_ty = np.ndarray[(m, n), np.dtype[dtype]]
-    s_ty = np.ndarray[(m,), np.dtype[dtype]]
+    s_ty = np.ndarray[(3*m,), np.dtype[dtype]]
     
     # AIE Core Function declarations
     func_type = "" if vectorized else "scalar_"
@@ -159,6 +159,12 @@ def batched_matmul_single_core(
     
     zero_kernel = Kernel(
         f"zero_{func_type}{dtype_str}", bin_name, [qk_ty]
+    )
+    
+    scale_buffer_init_kernel = Kernel(
+        "init_scale_buffer",
+        bin_name,
+        [s_ty , np.int32]
     )
     
     partial_softmax_kernel = Kernel(
@@ -176,7 +182,7 @@ def batched_matmul_single_core(
     matmul_PV = Kernel(
         "matmul_PV",
         bin_name,
-        [qk_ty, k_ty, qk_ty, s_ty],
+        [qk_ty, k_ty, qk_ty, s_ty, np.int32, np.int32],
     )
 
     # AIE-array data movement with object fifos
@@ -222,6 +228,8 @@ def batched_matmul_single_core(
         o_dims = [(m // r, r * n), (r, t), (n // t, r * t), (t, 1)]
     outO = memO.cons().forward(name="outO", dims_to_stream=o_dims, placement=Tile(col=1, row=1))
     
+    print(f"Output layout transformation: {o_dims}")
+    
     # Runtime parameters to control which microkernel to toggle
     rtps = []
     rtps.append(
@@ -252,20 +260,28 @@ def batched_matmul_single_core(
                 
             of_qk_out.release(1)
 
-    def partial_softmax(of_in_a, of_out_b, of_out_scale, softmax):
+    def softmax(of_in_a, of_out_b, of_out_scale, partial_softmax, init_scale_buffer):
+        
+        
+        # init Local buffer (maintained) -> check the while 1 loop to do this only once -> for loop to int max
         
         elt_of_out_b = of_out_b.acquire(1)
         elt_of_in_a = of_in_a.acquire(1)
         elt_of_out_scale = of_out_scale.acquire(1)
         
-        softmax(elt_of_in_a, elt_of_out_b, elt_of_out_scale, inv_scale, S_q, S_kv)
+        init_scale_buffer(elt_of_out_scale, S_q)
+        
+        partial_softmax(elt_of_in_a, elt_of_out_b, elt_of_out_scale, inv_scale, S_q, S_kv)
+        
+        # Copy local scale buffer to object fifo
         
         of_in_a.release(1)
         of_out_b.release(1)
+        
+        # Release but maintain the values in the current scale buffer
         of_out_scale.release(1)
     
     def batched_matmul_av(of_a, of_v, of_scale, of_o_out, zero, matmul_PV):
-        
         
         elt_of_out_scale = of_scale.acquire(1)
         
@@ -276,7 +292,7 @@ def batched_matmul_single_core(
             elem_in_a = of_a.acquire(1)
             elem_in_v = of_v.acquire(1)
             
-            matmul_PV(elem_in_a, elem_in_v, elem_o_out, elt_of_out_scale)
+            matmul_PV(elem_in_a, elem_in_v, elem_o_out, elt_of_out_scale, S_q, S_kv)
             
             of_a.release(1)
             of_v.release(1)
@@ -300,12 +316,13 @@ def batched_matmul_single_core(
     )
     
     softmax_worker = Worker(
-        partial_softmax,
+        softmax,
         fn_args = [
             outQK.cons(),
             memA.prod(),
             scaleOF.prod(),
             partial_softmax_kernel,
+            scale_buffer_init_kernel,
         ],
         stack_size=0xD00,
         placement=Tile(col=0, row=3)

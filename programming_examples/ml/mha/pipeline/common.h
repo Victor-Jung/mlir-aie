@@ -187,7 +187,7 @@ void print_matrix(const std::vector<T> matrix, int n_cols,
   }
 
   w += 3; // for decimal point and two decimal digits
-  ostream << std::fixed << std::setprecision(6);
+  ostream << std::fixed << std::setprecision(5);
 
 #define print_row(what)                                                        \
   for (int col = 0; col < (n_printable_cols + 1) / 2; col++) {                 \
