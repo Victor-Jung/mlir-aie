@@ -309,7 +309,6 @@ def batched_matmul_single_core(
         of_scale.release(1)
         ###
 
-        ### Second iteration
         elem_in_p = of_p.acquire(1)
         elem_in_v = of_v.acquire(1)
         elt_of_out_scale = of_scale.acquire(1)
@@ -320,7 +319,7 @@ def batched_matmul_single_core(
         of_p.release(1)
         of_v.release(1)
         of_scale.release(1)
-        ###
+        
         
                 
         of_o_out.release(1)

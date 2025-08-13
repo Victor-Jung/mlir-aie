@@ -133,15 +133,17 @@ void partial_softmax_alias_bf16(bfloat16 *restrict input_vector,
       max_val = running_max;
     }
   }
-  max_val_vec = aie::broadcast<bfloat16, SM_VEC_LEN>(max_val);
-
+  
   // Compute m_{i}
-  if (running_max > scale_buffer[row_idx]) {
-    scale_buffer[row_size + row_idx] = running_max;
+  if (max_val > scale_buffer[row_idx]) {
+    scale_buffer[row_size + row_idx] = max_val;
   }
   else{
     scale_buffer[row_size + row_idx] = scale_buffer[row_idx];
+    max_val = scale_buffer[row_idx];
   }
+
+  max_val_vec = aie::broadcast<bfloat16, SM_VEC_LEN>(max_val);
     
   // Second pass
   for (int i = 0; i < elem_iters; i++) {

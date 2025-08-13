@@ -30,9 +30,9 @@ def generate_random_data(heads, S_q, S_kv, d, dtype, seed=42, verbose: bool = Fa
     
     if dtype in ["bf16", "f32"]:
         # VJUNG: Random numbers should NOT be uniformly between 0 and 1, because that would make the matrix product AB always close to 1.
-        Q = torch.rand(heads, S_q, d, dtype=torch.float32) * 2
-        K = torch.rand(heads, S_kv, d, dtype=torch.float32) * 2
-        V = torch.rand(heads, S_kv, d, dtype=torch.float32) * 2
+        Q = torch.rand(heads, S_q, d, dtype=torch.float32) * 128 - 64
+        K = torch.rand(heads, S_kv, d, dtype=torch.float32) * 128 - 64
+        V = torch.rand(heads, S_kv, d, dtype=torch.float32) * 128 - 64
     else:
         # For integer types, use uniform distribution
         if dtype == "i8":
