@@ -4,13 +4,15 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
 # (c) Copyright 2025 Advanced Micro Devices, Inc. or its affiliates
+import sys
 import argparse
+
 from pathlib import Path
 
 from ml_dtypes import bfloat16
 import numpy as np
 
-from aie.iron import Kernel, ObjectFifo, Program, Runtime, Worker, GlobalBuffer, WorkerRuntimeBarrier
+from aie.iron import Kernel, ObjectFifo, Program, Runtime, Worker, GlobalBuffer, WorkerRuntimeBarrier, LocalBuffer
 from aie.iron.placers import SequentialPlacer
 from aie.iron.device import NPU1Col1, NPU2, Tile
 from aie.iron.controlflow import range_
@@ -150,7 +152,7 @@ def batched_matmul_single_core(
     q_ty = np.ndarray[(m, k), np.dtype[dtype]]
     k_ty = np.ndarray[(k, n), np.dtype[dtype]]
     qk_ty = np.ndarray[(m, n), np.dtype[dtype]]
-    s_ty = np.ndarray[(3*m,), np.dtype[dtype]]
+    s_ty = np.ndarray[(4*m,), np.dtype[dtype]]
     
     # AIE Core Function declarations
     func_type = "" if vectorized else "scalar_"
@@ -159,6 +161,10 @@ def batched_matmul_single_core(
     
     zero_kernel = Kernel(
         f"zero_{func_type}{dtype_str}", bin_name, [qk_ty]
+    )
+    
+    memcopy_kernel = Kernel(
+        f"passThroughLine", bin_name, [s_ty, s_ty, np.int32]
     )
     
     scale_buffer_init_kernel = Kernel(
@@ -182,7 +188,13 @@ def batched_matmul_single_core(
     matmul_PV = Kernel(
         "matmul_PV",
         bin_name,
-        [qk_ty, k_ty, qk_ty, s_ty, np.int32, np.int32],
+        [qk_ty, k_ty, qk_ty, s_ty, np.int32, np.int32, np.int32],
+    )
+    
+    rescale_O = Kernel(
+        "rescale_O",
+        bin_name,
+        [qk_ty, s_ty, np.int32],
     )
 
     # AIE-array data movement with object fifos
@@ -244,62 +256,74 @@ def batched_matmul_single_core(
     workerBarriers = []
     workerBarriers.append(WorkerRuntimeBarrier())
 
-    def batched_matmul_qk(of_q, of_k, of_qk_out, zero, matmul_QK):
+    def batched_matmul_qk(of_q, of_k, of_a_out, zero, matmul_QK):
         
-        for _ in range_(tiles):
-            elem_qk_out = of_qk_out.acquire(1)
-            zero(elem_qk_out)
+        elem_in_q = of_q.acquire(1)
+        elem_a_out = of_a_out.acquire(1)
+        elem_in_k = of_k.acquire(1)
+        
+        zero(elem_a_out)
+        matmul_QK(elem_in_q, elem_in_k, elem_a_out)
+        
+        of_k.release(1)
+        of_q.release(1)
+        of_a_out.release(1)
 
-            elem_in_q = of_q.acquire(1)
-            elem_in_k = of_k.acquire(1)
+    def softmax(of_in_a, of_out_p, of_out_scale, partial_softmax, init_scale_buffer, memcopy_kernel):
+        
+        scale_buffer = LocalBuffer(initial_value=np.zeros(shape=(4*m,), dtype=dtype))
+        
+        for _ in range_(sys.maxsize):
             
-            matmul_QK(elem_in_q, elem_in_k, elem_qk_out)
+            init_scale_buffer(scale_buffer, S_q)
             
-            of_q.release(1)
-            of_k.release(1)
+            for _ in range_(S_kv // m):
                 
-            of_qk_out.release(1)
-
-    def softmax(of_in_a, of_out_b, of_out_scale, partial_softmax, init_scale_buffer):
-        
-        
-        # init Local buffer (maintained) -> check the while 1 loop to do this only once -> for loop to int max
-        
-        elt_of_out_b = of_out_b.acquire(1)
-        elt_of_in_a = of_in_a.acquire(1)
-        elt_of_out_scale = of_out_scale.acquire(1)
-        
-        init_scale_buffer(elt_of_out_scale, S_q)
-        
-        partial_softmax(elt_of_in_a, elt_of_out_b, elt_of_out_scale, inv_scale, S_q, S_kv)
-        
-        # Copy local scale buffer to object fifo
-        
-        of_in_a.release(1)
-        of_out_b.release(1)
-        
-        # Release but maintain the values in the current scale buffer
-        of_out_scale.release(1)
+                elt_of_out_p = of_out_p.acquire(1)
+                elt_of_in_a = of_in_a.acquire(1)
+                elt_of_out_scale = of_out_scale.acquire(1)
+            
+                partial_softmax(elt_of_in_a, elt_of_out_p, scale_buffer, inv_scale, S_q, m)
+                
+                memcopy_kernel(scale_buffer, elt_of_out_scale, 4*m)
+            
+                of_in_a.release(1)
+                of_out_p.release(1)
+                of_out_scale.release(1)
     
-    def batched_matmul_av(of_a, of_v, of_scale, of_o_out, zero, matmul_PV):
+    def batched_matmul_av(of_p, of_v, of_scale, of_o_out, zero, matmul_PV, rescale_O):
         
+        elem_o_out = of_o_out.acquire(1)
+        
+        zero(elem_o_out)
+        
+        ### First iteration, don't rescale O_{i-1}
+        elem_in_p = of_p.acquire(1)
+        elem_in_v = of_v.acquire(1)
         elt_of_out_scale = of_scale.acquire(1)
         
-        for _ in range_(tiles):
-            elem_o_out = of_o_out.acquire(1)
-            zero(elem_o_out)
-
-            elem_in_a = of_a.acquire(1)
-            elem_in_v = of_v.acquire(1)
-            
-            matmul_PV(elem_in_a, elem_in_v, elem_o_out, elt_of_out_scale, S_q, S_kv)
-            
-            of_a.release(1)
-            of_v.release(1)
-                
-            of_o_out.release(1)
+        matmul_PV(elem_in_p, elem_in_v, elem_o_out, elt_of_out_scale, S_q, m, 0)
         
+        of_p.release(1)
+        of_v.release(1)
         of_scale.release(1)
+        ###
+
+        ### Second iteration
+        elem_in_p = of_p.acquire(1)
+        elem_in_v = of_v.acquire(1)
+        elt_of_out_scale = of_scale.acquire(1)
+        
+        matmul_PV(elem_in_p, elem_in_v, elem_o_out, elt_of_out_scale, S_q, m, 1)
+        rescale_O(elem_o_out, elt_of_out_scale, m)
+        
+        of_p.release(1)
+        of_v.release(1)
+        of_scale.release(1)
+        ###
+        
+                
+        of_o_out.release(1)
 
     # Create worker from task
     matmul_worker = Worker(
@@ -323,9 +347,11 @@ def batched_matmul_single_core(
             scaleOF.prod(),
             partial_softmax_kernel,
             scale_buffer_init_kernel,
+            memcopy_kernel,
         ],
         stack_size=0xD00,
-        placement=Tile(col=0, row=3)
+        placement=Tile(col=0, row=3),
+        while_true=False
     )
     
     matmul_av_worker = Worker(
@@ -337,6 +363,7 @@ def batched_matmul_single_core(
             memO.prod(),
             zero_kernel,
             matmul_PV,
+            rescale_O,
         ], 
         stack_size=0xD00,
         placement=Tile(col=0, row=4)
@@ -366,10 +393,10 @@ def batched_matmul_single_core(
 
     if verbose:
         print(f"DMA Transfer Configuration: DRAM <-> Mem tile")
-        print_tap_seq_info(Q_tiles, "A")
-        print_tap_seq_info(K_tiles, "B")
+        print_tap_seq_info(Q_tiles, "Q")
+        print_tap_seq_info(K_tiles, "K")
         print_tap_seq_info(V_tiles, "V")
-        print_tap_seq_info(QK_tiles, "C")
+        print_tap_seq_info(O_tiles, "O")
 
     # Runtime operations to move data to/from the AIE-array
     rt = Runtime()
@@ -380,13 +407,18 @@ def batched_matmul_single_core(
 
         Q_idx = [i for i in range(heads * S_q_div_m) for _ in range(S_kv_div_n)]  
         K_idx = [i + S_kv_div_n*h for h in range(heads) for _ in range(S_q_div_m) for i in range(S_kv_div_n)]
+        
+        print(f"Q_idx: {Q_idx}")
+        print(f"K_idx: {K_idx}")
 
         for idx in range(len(QK_tiles)):
             
+            # Right now I send Q too many times, optimize this later
             rt.fill(inQ.prod(), Q, tap=Q_tiles[Q_idx[idx]], placement = Tile(col = 0, row = 0))
             rt.fill(inK.prod(), K, tap=K_tiles[K_idx[idx]], placement = Tile(col = 0, row = 0))
             rt.fill(inV.prod(), V, tap=V_tiles[K_idx[idx]], placement = Tile(col = 1, row = 0))
-            rt.drain(outO.cons(), O, tap=O_tiles[idx], wait=True, placement = Tile(col = 0, row = 0))
+            
+        rt.drain(outO.cons(), O, tap=O_tiles[0], wait=True, placement = Tile(col = 0, row = 0))
             
 
     # Create the program from the device type and runtime

@@ -26,7 +26,7 @@ template <typename Tin, typename Tout, typename Tacc>
 int verify_against_golden(const std::vector<Tout>& C, int verbosity = 0, 
                          float abs_tol = 0.05, float rel_tol = 0.05) {
     // Check dimensions match
-    if (C.size() != golden_reference::HEADS * golden_reference::S_q * golden_reference::S_kv) {
+    if (C.size() != golden_reference::HEADS * golden_reference::S_q * golden_reference::d) {
         std::cerr << "Error: Output size mismatch. Expected " 
                   << golden_reference::HEADS * golden_reference::S_q * golden_reference::S_kv 
                   << " but got " << C.size() << std::endl;
@@ -40,8 +40,8 @@ int verify_against_golden(const std::vector<Tout>& C, int verbosity = 0,
     std::cout << "Verifying size " << C.size() << std::endl;
     for (int head = 0; head < golden_reference::HEADS; head++) {
         for (int row = 0; row < golden_reference::S_q; row++) {
-            for (int col = 0; col < golden_reference::S_kv; col++) {
-                int idx = (head * golden_reference::S_q * golden_reference::S_kv) + (row * golden_reference::S_kv) + col;
+            for (int col = 0; col < golden_reference::d; col++) {
+                int idx = (head * golden_reference::S_q * golden_reference::d) + (row * golden_reference::S_q) + col;
                 Tout expected = (Tout)golden_reference::O[idx];
                 Tout actual = C[idx];
                 
@@ -69,9 +69,9 @@ int verify_against_golden(const std::vector<Tout>& C, int verbosity = 0,
         std::cout << std::endl << "Golden Reference:" << std::endl;
         std::vector<Tout> golden_vec(golden_reference::O.begin(), 
                                    golden_reference::O.end());
-        matmul_common::print_matrix(golden_vec, golden_reference::S_kv, 16, 16);
+        matmul_common::print_matrix(golden_vec, golden_reference::d, 16, 16);
         std::cout << std::endl << "Actual Output:" << std::endl;
-        matmul_common::print_matrix(C, golden_reference::S_kv, 16, 16);
+        matmul_common::print_matrix(C, golden_reference::d, 16, 16);
     }
     
     return n_errors;

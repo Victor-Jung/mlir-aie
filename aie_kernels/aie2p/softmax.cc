@@ -172,7 +172,14 @@ void partial_softmax_alias_bf16(bfloat16 *restrict input_vector,
   aie::vector<float, 16> vect_in = aie::broadcast<float, 16>(scale_buffer[row_idx] - scale_buffer[row_size + row_idx]);
   l_i_accum = aie::exp2<bfloat16>(vect_in);
   *it_log_out = l_i_accum.to_vector<bfloat16>();
+
+  // Store l_{i}
   scale_buffer[2*row_size + row_idx] = input_vector[0]*scale_buffer[2*row_size + row_idx] + (bfloat16)accum_exp_val;
+  // Store exp(m_{i-1} - m_{i}) for next step
+  scale_buffer[3*row_size + row_idx] = input_vector[0];
+  // Store the current m_{i} to become m_{i-1} in the next step
+  scale_buffer[row_idx] = scale_buffer[row_size + row_idx];
+
 
   event1();
 

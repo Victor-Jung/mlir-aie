@@ -11,7 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
 # Configuration variables
 set(heads 1)
 set(S_q 16)
-set(S_kv 16)
+set(S_kv 32)
 set(d 16)
 set(m 16)
 set(k 16)

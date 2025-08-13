@@ -73,7 +73,7 @@ int main(int argc, const char *argv[]) {
 
   int Q_VOLUME = heads * S_q * d;
   int K_VOLUME = heads * S_kv * d;
-  int QK_VOLUME = heads * S_q * S_kv;
+  int QK_VOLUME = heads * S_q * d;
 
   size_t Q_SIZE = (Q_VOLUME * sizeof(DTYPE_IN));
   size_t K_SIZE = (K_VOLUME * sizeof(DTYPE_IN));
