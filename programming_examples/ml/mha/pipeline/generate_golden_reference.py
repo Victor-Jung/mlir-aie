@@ -29,10 +29,13 @@ def generate_random_data(heads, S_q, S_kv, d, dtype, seed=42, verbose: bool = Fa
     torch_dtype = DTYPE_MAP[dtype]
     
     if dtype in ["bf16", "f32"]:
+        
+        val_range = 4
+        
         # VJUNG: Random numbers should NOT be uniformly between 0 and 1, because that would make the matrix product AB always close to 1.
-        Q = torch.rand(heads, S_q, d, dtype=torch.float32) * 128 - 64
-        K = torch.rand(heads, S_kv, d, dtype=torch.float32) * 128 - 64
-        V = torch.rand(heads, S_kv, d, dtype=torch.float32) * 128 - 64
+        Q = torch.rand(heads, S_q, d, dtype=torch.float32) * val_range - val_range/2
+        K = torch.rand(heads, S_kv, d, dtype=torch.float32) * val_range - val_range/2
+        V = torch.rand(heads, S_kv, d, dtype=torch.float32) * val_range - val_range/2
     else:
         # For integer types, use uniform distribution
         if dtype == "i8":
@@ -74,6 +77,9 @@ def compute_golden_reference(Q, K, V):
     ).to(torch.bfloat16)
     O = X # Use torch official sdpa function as golden model
 
+    # Debug  
+    # O = QK
+    
     return QK, QK_scaled, A, O
 
 def tensor_to_header(tensor: torch.tensor, cpp_dtype: str, name: str) -> str:
