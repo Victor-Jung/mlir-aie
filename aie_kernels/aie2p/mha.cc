@@ -15,15 +15,51 @@
 
 #include <aie_api/aie.hpp>
 
+#define ROUNDING_MODE aie::rounding_mode::conv_even
+
 extern "C" {
+    void matmul_scalar_bf16_bf16(bfloat16 *a_in, bfloat16 *b_in, bfloat16 *c_out);
     void matmul_bf16_bf16(bfloat16 *a_in, bfloat16 *b_in, bfloat16 *c_out);
     void matmul_bf16_bf16_rowmaj(bfloat16 *a_in, bfloat16 *b_in, bfloat16 *c_out);
     void partial_softmax_bf16(bfloat16 *input, bfloat16 *output, bfloat16 *scale_buffer, const int32_t input_size, const int32_t row_idx, const int32_t row_size);
     void passThroughLine(int16_t *in, int16_t *out, int32_t lineWidth);
 
+    // VJUNG: Regular PassThroughLine crashes on aie211
+    void passThroughLineScalar(bfloat16 *in, bfloat16 *out, int32_t lineWidth) {
+
+        ::aie::set_rounding(ROUNDING_MODE);
+
+        for (int32_t i = 0; i < lineWidth; i++) {
+            out[i] = in[i];
+        }
+    }
+
+    void passThroughLineScalarDebug(bfloat16 *in, bfloat16 *out, int32_t lineWidth) {
+
+        ::aie::set_rounding(ROUNDING_MODE);
+
+        for (int32_t i = 0; i < lineWidth; i++) {
+            out[i] = in[i];
+        }
+    }
+
+    void matmul_bf16_bf16_wrapper(bfloat16 *a_in, bfloat16 *b_in, bfloat16 *c_out) {
+        
+        ::aie::set_rounding(ROUNDING_MODE);
+        matmul_bf16_bf16(a_in, b_in, c_out);
+    }
+
+    void matmul_bf16_bf16_wrapper_scalar(bfloat16 *a_in, bfloat16 *b_in, bfloat16 *c_out) {
+        
+        ::aie::set_rounding(ROUNDING_MODE);
+        matmul_scalar_bf16_bf16(a_in, b_in, c_out);
+    }
 
     void matmul_PV(bfloat16 *Q, bfloat16 *K, bfloat16 *out, bfloat16 *scale_buffer, const int32_t S_q, const int32_t S_kv, int32_t first_iter) {
         
+        // ::aie::set_saturation(aie::saturation_mode::saturate);
+        ::aie::set_rounding(ROUNDING_MODE);
+
         // VJUNG: Scale O_{i-1} by 1/exp(m_{i-1} - m_{i}) store in scale_buffer[3*S_kv:3*S_kv + S_kv]
         // VJUNG: Skip this for the first iteration as 1/exp(m_{i-1} - m_{i}) degenerates to inf due to m intizalized to -inf
         if (first_iter != 0) {
@@ -39,27 +75,14 @@ extern "C" {
         }
         
         matmul_bf16_bf16_rowmaj(Q, K, out);
-        
-        ///// Debugging code /////
-        // VJUNG: Use this to get softmax values for debugging
-        // passThroughLine((int16_t*)Q, (int16_t*)out, rows*cols);
-        
-        // Test values in scale buffer to check that they are valid
-        // out[0] = scale_buffer[0];
-        // out[1] = scale_buffer[32];
-
-        // Test that exp(-inf) is 0
-        // auto vect_out = aie::begin_restrict_vector<16>((bfloat16 *)out);        
-        // aie::accum<accfloat, 16> exp_val_accum = aie::zeros<accfloat, 16>();
-        // aie::vector<float, 16> vect_in = aie::broadcast<float, 16>(std::numeric_limits<bfloat16>::lowest());
-        // // exp_val_accum = vect_in;
-        // exp_val_accum = aie::exp2<bfloat16>(vect_in);
-        // *vect_out = exp_val_accum;
 
     }
 
 
     void rescale_O(bfloat16 *O, bfloat16 *scale_buffer, int32_t S_kv) {
+
+        ::aie::set_rounding(ROUNDING_MODE);
+
         // VJUNG: Only after all KV are processed
         // VJUNG: TODO: Make this generic for every tile size
         // VJUNG: Need to scale depending on the data layout at the output of GEMM
@@ -78,6 +101,8 @@ extern "C" {
 
     void partial_softmax(bfloat16 *A, bfloat16 *P, bfloat16 *scale_buffer, float inv_scale, int32_t S_q, int32_t S_kv) {
 
+        ::aie::set_rounding(ROUNDING_MODE);
+
         for (int32_t i = 0; i < S_q * S_kv; i++) {
             A[i] = A[i] * bfloat16(inv_scale);
         }
@@ -88,6 +113,7 @@ extern "C" {
 
     void init_scale_buffer(bfloat16 *scale_buffer, int32_t size) {
         // VJUNG: TODO: Vectorize
+        ::aie::set_rounding(ROUNDING_MODE);
 
         // VJUNG: m_{i-1} vector
         for (int32_t i = 0; i < size; i++) {

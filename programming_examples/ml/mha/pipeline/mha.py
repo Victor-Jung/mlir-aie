@@ -99,7 +99,10 @@ def batched_matmul_single_core(
     verbose: bool = False,
 ):
 
+    # When false toogle sclar GEMM (for QK)
     vectorized = True
+    debug_QK = False
+    
     enable_tracing = True if trace_size > 0 else False
 
     # r, s, t are the dimensions required by the microkernel MAC instructions.
@@ -139,7 +142,6 @@ def batched_matmul_single_core(
     S_q_div_m = S_q // m
     S_kv_div_n = S_kv // n
     d_div_k = d // k
-    tiles = heads * S_q_div_m * S_kv_div_n
     
     inv_scale = 1 / np.sqrt(d)
 
@@ -155,16 +157,20 @@ def batched_matmul_single_core(
     s_ty = np.ndarray[(4*m,), np.dtype[dtype]]
     
     # AIE Core Function declarations
-    func_type = "" if vectorized else "scalar_"
+    func_type = "" if vectorized else "_scalar"
     bin_name = "kernels.a"
     
     
     zero_kernel = Kernel(
-        f"zero_{func_type}{dtype_str}", bin_name, [qk_ty]
+        f"zero_{dtype_str}", bin_name, [qk_ty]
     )
     
-    memcopy_kernel = Kernel(
-        f"passThroughLine", bin_name, [s_ty, s_ty, np.int32]
+    memcopy_kernel_scale = Kernel(
+        f"passThroughLineScalar", bin_name, [s_ty, s_ty, np.int32]
+    )
+    
+    memcopy_kernel_debug = Kernel(
+        f"passThroughLineScalarDebug", bin_name, [qk_ty, qk_ty, np.int32]
     )
     
     scale_buffer_init_kernel = Kernel(
@@ -180,7 +186,7 @@ def batched_matmul_single_core(
     )
     
     matmul_QK = Kernel(
-        "matmul_bf16_bf16",
+        f"matmul_bf16_bf16_wrapper{func_type}",
         bin_name,
         [q_ty, k_ty, qk_ty],
     )
@@ -203,7 +209,7 @@ def batched_matmul_single_core(
     q_dims = None
     if vectorized:
         q_dims = [(m // r, r * k), (k // s, s), (r, k), (s, 1)]
-    memQ = inQ.cons().forward(name="memQ", dims_to_stream=q_dims) # Forward DRAM -> Mem tile -> L1
+    memQ = inQ.cons().forward(name="memQ",  dims_to_stream=q_dims) # Forward DRAM -> Mem tile -> L1
 
     # Input K, in col major format (so we can skip the transpose)
     inK = ObjectFifo(k_ty, name="inK")
@@ -241,20 +247,7 @@ def batched_matmul_single_core(
     outO = memO.cons().forward(name="outO", dims_to_stream=o_dims, placement=Tile(col=1, row=1))
     
     print(f"Output layout transformation: {o_dims}")
-    
-    # Runtime parameters to control which microkernel to toggle
-    rtps = []
-    rtps.append(
-        GlobalBuffer(
-            np.ndarray[(1,), np.dtype[np.int32]],
-            name="rtp",
-            initial_value=np.array([1], dtype=np.int32),
-            use_write_rtp=True,
-        )
-    )
-    
-    workerBarriers = []
-    workerBarriers.append(WorkerRuntimeBarrier())
+
 
     def batched_matmul_qk(of_q, of_k, of_a_out, zero, matmul_QK):
         
@@ -269,7 +262,7 @@ def batched_matmul_single_core(
         of_q.release(1)
         of_a_out.release(1)
 
-    def softmax(of_in_a, of_out_p, of_out_scale, partial_softmax, init_scale_buffer, memcopy_kernel):
+    def softmax(of_in_a, of_out_p, of_out_scale, partial_softmax, init_scale_buffer, memcopy_kernel_scale, memcopy_kernel_debug):
         
         scale_buffer = LocalBuffer(initial_value=np.zeros(shape=(4*m,), dtype=dtype))
         
@@ -283,15 +276,17 @@ def batched_matmul_single_core(
                 elt_of_in_a = of_in_a.acquire(1)
                 elt_of_out_scale = of_out_scale.acquire(1)
             
-                partial_softmax(elt_of_in_a, elt_of_out_p, scale_buffer, inv_scale, S_q, m)
-                
-                memcopy_kernel(scale_buffer, elt_of_out_scale, 4*m)
+                if debug_QK:
+                    memcopy_kernel_debug(elt_of_in_a, elt_of_out_p, m * k) # Debug
+                else:
+                    partial_softmax(elt_of_in_a, elt_of_out_p, scale_buffer, inv_scale, S_q, m)
+                    memcopy_kernel_scale(scale_buffer, elt_of_out_scale, 4*m)
             
                 of_in_a.release(1)
                 of_out_p.release(1)
                 of_out_scale.release(1)
     
-    def batched_matmul_av(of_p, of_v, of_scale, of_o_out, zero, matmul_PV, rescale_O):
+    def batched_matmul_av(of_p, of_v, of_scale, of_o_out, zero, matmul_PV, rescale_O, memcopy_kernel):
         
         elem_o_out = of_o_out.acquire(1)
         
@@ -302,26 +297,27 @@ def batched_matmul_single_core(
         elem_in_v = of_v.acquire(1)
         elt_of_out_scale = of_scale.acquire(1)
         
-        matmul_PV(elem_in_p, elem_in_v, elem_o_out, elt_of_out_scale, S_q, m, 0)
+        if debug_QK:
+            memcopy_kernel(elem_in_p, elem_o_out, m * k)
+        else:
+            matmul_PV(elem_in_p, elem_in_v, elem_o_out, elt_of_out_scale, S_q, m, 0)
         
         of_p.release(1)
         of_v.release(1)
         of_scale.release(1)
         ###
 
-        elem_in_p = of_p.acquire(1)
-        elem_in_v = of_v.acquire(1)
-        elt_of_out_scale = of_scale.acquire(1)
+        # elem_in_p = of_p.acquire(1)
+        # elem_in_v = of_v.acquire(1)
+        # elt_of_out_scale = of_scale.acquire(1)
         
-        matmul_PV(elem_in_p, elem_in_v, elem_o_out, elt_of_out_scale, S_q, m, 1)
+        # matmul_PV(elem_in_p, elem_in_v, elem_o_out, elt_of_out_scale, S_q, m, 1)
         rescale_O(elem_o_out, elt_of_out_scale, m)
         
-        of_p.release(1)
-        of_v.release(1)
-        of_scale.release(1)
+        # of_p.release(1)
+        # of_v.release(1)
+        # of_scale.release(1)
         
-        
-                
         of_o_out.release(1)
 
     # Create worker from task
@@ -346,7 +342,8 @@ def batched_matmul_single_core(
             scaleOF.prod(),
             partial_softmax_kernel,
             scale_buffer_init_kernel,
-            memcopy_kernel,
+            memcopy_kernel_scale,
+            memcopy_kernel_debug,
         ],
         stack_size=0xD00,
         placement=Tile(col=0, row=3),
@@ -363,6 +360,7 @@ def batched_matmul_single_core(
             zero_kernel,
             matmul_PV,
             rescale_O,
+            memcopy_kernel_debug,
         ], 
         stack_size=0xD00,
         placement=Tile(col=0, row=4)
