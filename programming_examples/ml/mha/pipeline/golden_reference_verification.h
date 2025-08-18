@@ -34,6 +34,10 @@ int verify_against_golden(const std::vector<Tout>& C, int verbosity = 0,
     }
     
     int n_errors = 0;
+    float average_error = 0.0f;
+    Tin max_abs_error = 0.0f;
+    Tin min_abs_error = std::numeric_limits<Tin>::max();
+
     std::vector<matmul_common::error<Tout>> errors;
     Tout max_rel_error = (Tout)0.0f;
 
@@ -44,7 +48,11 @@ int verify_against_golden(const std::vector<Tout>& C, int verbosity = 0,
                 int idx = (head * golden_reference::S_q * golden_reference::d) + (row * golden_reference::S_q) + col;
                 Tout expected = (Tout)golden_reference::O[idx];
                 Tout actual = C[idx];
-                
+
+                average_error += std::abs(actual - expected);
+                max_abs_error = std::max(max_abs_error, std::abs(actual - expected));
+                min_abs_error = std::min(min_abs_error, std::abs(actual - expected));
+
                 std::optional<matmul_common::error<Tout>> error =
                     matmul_common::verify_single(std::cout, head, row, col, expected, actual, 
                                             abs_tol, rel_tol);
@@ -62,6 +70,13 @@ int verify_against_golden(const std::vector<Tout>& C, int verbosity = 0,
             }
         }
     }
+    average_error /= C.size();
+
+    std::cout << "Absolute tolerence: " << abs_tol << std::endl;
+    std::cout << "Relative tolerence: " << rel_tol << std::endl;
+    std::cout << "\nAverage relative error: " << average_error << std::endl;
+    std::cout << "Max absolute error: " << max_abs_error << std::endl;
+    std::cout << "Min absolute error: " << min_abs_error << std::endl << std::endl;
     
     matmul_common::print_error_summary(std::cout, n_errors, golden_reference::HEADS * golden_reference::S_q * golden_reference::S_kv, errors, max_rel_error);
     
