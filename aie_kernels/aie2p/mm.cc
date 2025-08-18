@@ -20,16 +20,26 @@
 
 #include "zero.cc"
 
-template <typename T_in, typename T_out, int rowA, int colA, int colB>
+#ifdef B_COL_MAJ
+constexpr bool is_b_row_maj = false;
+#else
+constexpr bool is_b_row_maj = true;
+#endif
+
+template <typename T_in, typename T_out, int M, int K, int N, bool b_row_maj>
 static inline void matmul_scalar(T_in *a, T_in *b, T_out *c) {
   event0();
-  for (int row = 0; row < rowA; row++) {
-    for (int col = 0; col < colB; col++) {
+  for (int m = 0; m < M; m++) {
+    for (int n = 0; n < N; n++) {
       T_out running_sum = 0;
-      for (int i = 0; i < colA; i++) {
-        running_sum += a[row * colA + i] * b[i * colB + col];
+      for (int k = 0; k < K; k++) {
+        if(b_row_maj) {
+          running_sum += a[m * K + k] * b[k * N + n];
+        } else {
+          running_sum += a[m * K + k] * b[n * N + k];
+        }
       }
-      c[row * colB + col] += running_sum;
+      c[m * N + n] += running_sum;
     }
   }
   event1();
@@ -162,12 +172,6 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
 
   event1();
 }
-
-#ifdef B_COL_MAJ
-constexpr bool is_b_row_maj = false;
-#else
-constexpr bool is_b_row_maj = true;
-#endif
 
 // The following kernel definitions use mmul shapes that have been found to be
 // optimal for AIE2P in combination with the 2x2 mmul expanded kernel.
@@ -418,7 +422,7 @@ extern "C" {
                              r, s, t)                                          \
   void matmul_scalar_##mlir_type_in##_##mlir_type_out(                         \
       ctype_in *a_in, ctype_in *b_in, ctype_out *c_out) {                      \
-    matmul_scalar<ctype_in, ctype_out, DIM_M, DIM_K, DIM_N>(a_in, b_in,        \
+    matmul_scalar<ctype_in, ctype_out, DIM_M, DIM_K, DIM_N, is_b_row_maj>(a_in, b_in,        \
                                                             c_out);            \
   }
 
