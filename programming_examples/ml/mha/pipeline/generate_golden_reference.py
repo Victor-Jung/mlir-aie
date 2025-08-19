@@ -91,7 +91,7 @@ def compute_golden_reference(Q, K, V):
         is_causal=False,
         scale=inv_scale
     ).to(torch.bfloat16)
-    # O = X # Use torch official sdpa function as golden model
+    O = X # Use torch official sdpa function as golden model
 
     # Debug  
     # O = QK

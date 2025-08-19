@@ -9,8 +9,8 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 
 # Configuration variables
-set(heads 1)
-set(S_q 16)
+set(heads 2)
+set(S_q 64)
 set(S_kv 64)
 set(d 16)
 set(B_q 16)

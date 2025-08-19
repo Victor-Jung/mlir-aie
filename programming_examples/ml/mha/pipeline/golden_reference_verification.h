@@ -46,7 +46,7 @@ int verify_against_golden(const std::vector<Tout>& actual_O, int verbosity = 0,
         for (int row = 0; row < golden_reference::S_q; row++) {
             for (int col = 0; col < golden_reference::d; col++) {
 
-                int idx = (head * golden_reference::S_q * golden_reference::d) + (row * golden_reference::S_q) + col;
+                int idx = (head * golden_reference::S_q * golden_reference::d) + (row * golden_reference::d) + col;
 
                 Tout expected = (Tout)golden_reference::O[idx];
                 Tout actual = actual_O[idx];
@@ -83,15 +83,15 @@ int verify_against_golden(const std::vector<Tout>& actual_O, int verbosity = 0,
     std::cout << "Max absolute error: " << max_abs_error << std::endl;
     std::cout << "Min absolute error: " << min_abs_error << std::endl << std::endl;
     
-    matmul_common::print_error_summary(std::cout, n_errors, golden_reference::HEADS * golden_reference::S_q * golden_reference::S_kv, errors, max_rel_error);
+    matmul_common::print_error_summary(std::cout, n_errors, golden_reference::HEADS * golden_reference::S_q * golden_reference::d, errors, max_rel_error);
     
     if (n_errors > -1 && verbosity >= 1) {
         std::cout << std::endl << "Golden Reference:" << std::endl;
         std::vector<Tout> golden_vec(golden_reference::O.begin(), golden_reference::O.end());
-        matmul_common::print_matrix(golden_vec, golden_reference::d, 16, 16);
+        matmul_common::print_matrix(golden_vec, golden_reference::d, 32, 16);
 
         std::cout << std::endl << "Actual Output:" << std::endl;
-        matmul_common::print_matrix(actual_O, golden_reference::d, 16, 16);
+        matmul_common::print_matrix(actual_O, golden_reference::d, 32, 16);
 
         std::cout << std::endl << "Difference:" << std::endl;
         std::vector<Tout> diff(actual_O.size());
@@ -99,7 +99,7 @@ int verify_against_golden(const std::vector<Tout>& actual_O, int verbosity = 0,
         for (int i = 0; i < actual_O.size(); i++) {
             diff[i] = golden_vec[i] - actual_O[i];
         }
-        matmul_common::print_matrix(diff, golden_reference::d, 16, 16, std::cout, " | ", " ... ", 6);
+        matmul_common::print_matrix(diff, golden_reference::d, 32, 16, std::cout, " | ", " ... ", 6);
     }
     
     return n_errors;

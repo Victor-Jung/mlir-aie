@@ -127,5 +127,9 @@ extern "C" {
         for (int32_t i = 0; i < size; i++) {
             scale_buffer[i + 2*size] = 0.0f;
         }
+
+        // for (int32_t i = 0; i < size; i++) {
+        //     scale_buffer[i + 3*size] = 0.0f;
+        // }
     }
 }
