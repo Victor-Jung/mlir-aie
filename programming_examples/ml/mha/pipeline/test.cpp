@@ -28,37 +28,31 @@
 
 #include "golden_reference_verification.h"
 
-#ifndef DATATYPES_USING_DEFINED
-#define DATATYPES_USING_DEFINED
-#ifndef DTYPE_IN
-#define DTYPE_IN std::bfloat16_t
-#endif
-#ifndef DTYPE_OUT
-#define DTYPE_OUT std::bfloat16_t
-#endif
-#ifndef DTYPE_ACC
+
+#define DTYPE_ACT std::bfloat16_t
+#define DTYPE_ACT std::bfloat16_t
 #define DTYPE_ACC float
-#endif
-using ACDTYPE_IN = DTYPE_ACC;
-#endif
+
+using DTYPE_ACT = float;
 
 #define XSTR(X) STR(X)
 #define STR(X) #X
 
 // Verification tolerance
 // See "Note on Numerical Tolerances" in README.md
-float abs_tol = matmul_common::get_abs_tol<DTYPE_IN>();
-float rel_tol = matmul_common::get_rel_tol<DTYPE_IN>();
+// float abs_tol = matmul_common::get_abs_tol<DTYPE_ACT>();
+// float rel_tol = matmul_common::get_rel_tol<DTYPE_ACT>();
+float abs_tol = 3.0e-3f;
+float rel_tol = 1.0e-2f;
 
 int main(int argc, const char *argv[]) {
   // Program arguments parsing
-  cxxopts::Options options("Matrix Matrix Multiplication Test");
+  cxxopts::Options options("MHA Test Harness");
   cxxopts::ParseResult vm;
   matmul_common::add_default_options(options);
 
   matmul_common::parse_options(argc, argv, options, vm);
   int verbosity = vm["verbosity"].as<int>();
-  int do_verify = vm["verify"].as<bool>();
   int n_iterations = vm["iters"].as<int>();
   int n_warmup_iterations = vm["warmup"].as<int>();
   int trace_size = vm["trace_sz"].as<int>();
@@ -73,17 +67,14 @@ int main(int argc, const char *argv[]) {
 
   int Q_VOLUME = heads * S_q * d;
   int K_VOLUME = heads * S_kv * d;
-  int QK_VOLUME = heads * S_q * d;
+  int O_VOLUME = heads * S_q * d;
 
-  size_t Q_SIZE = (Q_VOLUME * sizeof(DTYPE_IN));
-  size_t K_SIZE = (K_VOLUME * sizeof(DTYPE_IN));
-  size_t QK_SIZE = (QK_VOLUME * sizeof(DTYPE_IN));
+  size_t Q_SIZE = (Q_VOLUME * sizeof(DTYPE_ACT));
+  size_t K_SIZE = (K_VOLUME * sizeof(DTYPE_ACT));
+  size_t O_SIZE = (O_VOLUME * sizeof(DTYPE_ACT));
 
   std::vector<uint32_t> instr_v =
       test_utils::load_instr_binary(vm["instr"].as<std::string>());
-
-  if (verbosity >= 1)
-    std::cout << "Sequence instr count: " << instr_v.size() << "\n";
 
   // Start the XRT test code
   // Get a device handle
@@ -94,9 +85,6 @@ int main(int argc, const char *argv[]) {
   if (verbosity >= 1)
     std::cout << "Loading xclbin: " << vm["xclbin"].as<std::string>() << "\n";
   auto xclbin = xrt::xclbin(vm["xclbin"].as<std::string>());
-
-  if (verbosity >= 1)
-    std::cout << "Kernel opcode: " << vm["kernel"].as<std::string>() << "\n";
   std::string Node = vm["kernel"].as<std::string>();
 
   // Get the kernel from the xclbin
@@ -110,21 +98,12 @@ int main(int argc, const char *argv[]) {
                                  return name.rfind(Node, 0) == 0;
                                });
   auto kernelName = xkernel.get_name();
-
-  if (verbosity >= 1)
-    std::cout << "Registering xclbin: " << vm["xclbin"].as<std::string>()
-              << "\n";
-
   device.register_xclbin(xclbin);
 
-  // get a hardware context
-  if (verbosity >= 1)
-    std::cout << "Getting hardware context.\n";
+  // Get a hardware context
   xrt::hw_context context(device, xclbin.get_uuid());
 
-  // get a kernel handle
-  if (verbosity >= 1)
-    std::cout << "Getting handle to kernel:" << kernelName << "\n";
+  // Get a kernel handle
   auto kernel = xrt::kernel(context, kernelName);
 
   auto bo_instr = xrt::bo(device, instr_v.size() * sizeof(int),
@@ -133,12 +112,10 @@ int main(int argc, const char *argv[]) {
       xrt::bo(device, Q_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(3));
   auto bo_k =
       xrt::bo(device, K_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(4));
-  auto bo_qk =
-      xrt::bo(device, QK_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(5));
+  auto bo_o =
+      xrt::bo(device, O_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(5));
   auto bo_v =
         xrt::bo(device, K_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(6));
-  auto bo_a =
-        xrt::bo(device, QK_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(7));
 
   // Workaround so we declare a really small trace buffer when one is not used
   int tmp_trace_size = (trace_size > 0) ? trace_size : 1;
@@ -149,42 +126,38 @@ int main(int argc, const char *argv[]) {
     std::cout << "Writing data into buffer objects.\n";
   }
 
-  DTYPE_IN *bufQ = bo_q.map<DTYPE_IN *>();
-  std::vector<DTYPE_IN> QVec(Q_VOLUME);
-  DTYPE_IN *bufK = bo_k.map<DTYPE_IN *>();
-  std::vector<DTYPE_IN> KVec(K_VOLUME);
-  DTYPE_IN *bufV = bo_v.map<DTYPE_IN *>();
-  std::vector<DTYPE_IN> VVec(K_VOLUME);
+  DTYPE_ACT *bufQ = bo_q.map<DTYPE_ACT *>();
+  std::vector<DTYPE_ACT> QVec(Q_VOLUME);
+  DTYPE_ACT *bufK = bo_k.map<DTYPE_ACT *>();
+  std::vector<DTYPE_ACT> KVec(K_VOLUME);
+  DTYPE_ACT *bufV = bo_v.map<DTYPE_ACT *>();
+  std::vector<DTYPE_ACT> VVec(K_VOLUME);
   
   // Load input data from golden reference for consistency
   golden_reference_verification::load_golden_inputs(QVec, KVec, VVec);
   if (verbosity >= 1) {
     golden_reference_verification::print_golden_reference_info();
     std::cout << "Loaded golden reference inputs:" << std::endl;
-    std::cout << "  A[0] = " << (int)QVec[0] << ", A[1] = " << (int)QVec[1] << std::endl;
-    std::cout << "  B[0] = " << (int)KVec[0] << ", B[1] = " << (int)KVec[1] << std::endl;
+    std::cout << "  Q[0] = " << (int)QVec[0] << ", Q[1] = " << (int)QVec[1] << std::endl;
+    std::cout << "  K[0] = " << (int)KVec[0] << ", K[1] = " << (int)KVec[1] << std::endl;
   }
 
-  memcpy(bufQ, QVec.data(), (QVec.size() * sizeof(DTYPE_IN)));
-  memcpy(bufK, KVec.data(), (KVec.size() * sizeof(DTYPE_IN)));
-  memcpy(bufV, VVec.data(), (VVec.size() * sizeof(DTYPE_IN)));  
+  memcpy(bufQ, QVec.data(), (QVec.size() * sizeof(DTYPE_ACT)));
+  memcpy(bufK, KVec.data(), (KVec.size() * sizeof(DTYPE_ACT)));
+  memcpy(bufV, VVec.data(), (VVec.size() * sizeof(DTYPE_ACT)));
 
-  // Initialize outputs; bufQK is results matrix plus tracing info
-  char *bufQK = bo_qk.map<char *>();
-  std::vector<DTYPE_IN> QKVec(QK_VOLUME);
-  memset(bufQK, 0, QK_SIZE);
-
-  char *bufA = bo_a.map<char *>();
-  std::vector<DTYPE_IN> AVec(QK_VOLUME);
-  memset(bufA, 0, QK_SIZE);
+  // Initialize outputs; bufO is results matrix plus tracing info
+  char *bufO = bo_o.map<char *>();
+  std::vector<DTYPE_ACT> OVec(O_VOLUME);
+  memset(bufO, 0, O_SIZE);
 
   char *bufTrace = bo_trace.map<char *>();
   if (trace_size > 0)
     memset(bufTrace, 0, trace_size);
 
   if (verbosity >= 2) {
-    std::cout << "DTYPE_IN  = " XSTR(DTYPE_IN) "\n";
-    std::cout << "DTYPE_OUT = " XSTR(DTYPE_OUT) "\n";
+    std::cout << "DTYPE_ACT  = " XSTR(DTYPE_ACT) "\n";
+    std::cout << "DTYPE_ACT = " XSTR(DTYPE_ACT) "\n";
     std::cout << "Verification tolerance " << abs_tol << " absolute, "
               << rel_tol << " relative.\n";
     std::cout << "A = \n";
@@ -201,8 +174,7 @@ int main(int argc, const char *argv[]) {
   bo_q.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bo_k.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bo_v.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-  bo_qk.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-  bo_a.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+  bo_o.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   
   if (trace_size > 0)
     bo_trace.sync(XCL_BO_SYNC_BO_TO_DEVICE);
@@ -213,7 +185,7 @@ int main(int argc, const char *argv[]) {
   float npu_time_max = 0;
 
   int errors = 0;
-  float macs = 2.0 * float(heads) * float(S_q) * float(S_kv) * float(d);
+  float macs = 2.0 * float(heads) * float(S_q) * float(S_kv) * float(d) + 8.0 * float(heads) * float(S_q) * float(S_kv);
 
   for (unsigned iter = 0; iter < num_iter; iter++) {
 
@@ -222,14 +194,14 @@ int main(int argc, const char *argv[]) {
     }
     auto start = std::chrono::high_resolution_clock::now();
     unsigned int opcode = 3;
-    auto run = kernel(opcode, bo_instr, instr_v.size(), bo_q, bo_k, bo_v, bo_qk, bo_trace);
+    auto run = kernel(opcode, bo_instr, instr_v.size(), bo_q, bo_k, bo_v, bo_o, bo_trace);
     ert_cmd_state r = run.wait();
     if (r != ERT_CMD_STATE_COMPLETED) {
       std::cout << "Kernel did not complete. Returned status: " << r << "\n";
       return 1;
     }
     auto stop = std::chrono::high_resolution_clock::now();
-    bo_qk.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+    bo_o.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
     if (trace_size > 0)
       bo_trace.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
 
@@ -238,26 +210,20 @@ int main(int argc, const char *argv[]) {
       continue;
     }
 
-    if (do_verify) {
-      memcpy(QKVec.data(), bufQK, (QKVec.size() * sizeof(DTYPE_IN)));
-      if (verbosity >= 1) {
-          std::cout << "Verifying against PyTorch golden reference..." << std::endl;
-        }
-      auto vstart = std::chrono::system_clock::now();
-      
-      errors = golden_reference_verification::verify_against_golden<DTYPE_IN, DTYPE_IN, ACDTYPE_IN>(
-          QKVec, verbosity, abs_tol, rel_tol);
-      
-      auto vstop = std::chrono::system_clock::now();
-      float vtime =
-          std::chrono::duration_cast<std::chrono::seconds>(vstop - vstart)
-              .count();
-      if (verbosity >= 1) {
-        std::cout << "Verify time: " << vtime << " s." << std::endl;
-      }
-    } else {
-      if (verbosity >= 1)
-        std::cout << "WARNING: matmul results not verified." << std::endl;
+    memcpy(OVec.data(), bufO, (OVec.size() * sizeof(DTYPE_ACT)));
+
+    std::cout << "Verifying against PyTorch golden reference..." << std::endl;
+    auto vstart = std::chrono::system_clock::now();
+    
+    errors = golden_reference_verification::verify_against_golden<DTYPE_ACT, DTYPE_ACT, DTYPE_ACT>(
+        OVec, verbosity, abs_tol, rel_tol);
+    
+    auto vstop = std::chrono::system_clock::now();
+    float vtime =
+        std::chrono::duration_cast<std::chrono::seconds>(vstop - vstart)
+            .count();
+    if (verbosity >= 1) {
+      std::cout << "Verify time: " << vtime << " s." << std::endl;
     }
 
     float npu_time =
