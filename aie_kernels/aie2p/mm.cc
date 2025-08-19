@@ -81,6 +81,7 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
                                               T_out *__restrict pC) {
 
   using MMUL = aie::mmul<r, s, t, T_in, T_in, accauto>;
+  ::aie::set_rounding(aie::rounding_mode::conv_even); 
 
   event0();
 
@@ -414,6 +415,7 @@ extern "C" {
                                  mlir_type_out, r, s, t)                       \
   void matmul_##mlir_type_in##_##mlir_type_out(ctype_in *a_in, ctype_in *b_in, \
                                                ctype_out *c_out) {             \
+    ::aie::set_rounding(aie::rounding_mode::conv_even);                        \
     matmul_vectorized_##r##x##s##x##t##_##mlir_type_in##_##mlir_type_out<      \
         DIM_M, DIM_K, DIM_N>(a_in, b_in, c_out);                               \
   }
