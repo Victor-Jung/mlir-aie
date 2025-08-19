@@ -13,9 +13,9 @@ set(heads 1)
 set(S_q 16)
 set(S_kv 64)
 set(d 16)
-set(m 16)
+set(B_q 16)
 set(k 16)
-set(n 16)
+set(B_kv 16)
 set(dtype "bf16")
 
 set(verbose 1)
@@ -29,12 +29,12 @@ set(currentDesignTarget ${design_name})
 project(${ProjectName})
 
 # Derived variables
-set(target_suffix "${heads}_${S_q}_${S_kv}_${d}_${m}x${k}x${n}")
+set(target_suffix "${heads}_${S_q}_${S_kv}_${d}_${B_q}x${d}x${B_kv}")
 
-set(mm_kernel "mm_${m}x${k}x${n}_${dtype}_${dtype}")
-set(softmax_kernel "softmax_${n}_${dtype}_${dtype}")
-set(mha_kernel "mha_${heads}_${S_q}_${S_kv}_${d}_${m}x${k}x${n}_${dtype}")
-set(passthrough_kernel "passthrough_${m}x${n}_${dtype}")
+set(mm_kernel "mm_${B_q}x${d}x${B_kv}_${dtype}_${dtype}")
+set(softmax_kernel "softmax_${B_kv}_${dtype}_${dtype}")
+set(mha_kernel "mha_${heads}_${S_q}_${S_kv}_${d}_${B_q}x${d}x${B_kv}_${dtype}")
+set(passthrough_kernel "passthrough_${B_q}x${B_kv}_${dtype}")
 
 if(verbose STREQUAL "1")
     set(verbose_string "--verbose")
@@ -55,7 +55,7 @@ message(STATUS "  Heads: ${heads}")
 message(STATUS "  Sequence Length Q: ${S_q}")
 message(STATUS "  Sequence Length KV: ${S_kv}")
 message(STATUS "  Embedding Dimension d: ${d}")
-message(STATUS "  Tile dimensions: ${m}x${k}x${n}")
+message(STATUS "  Tile dimensions: ${B_q}x${d}x${B_kv}")
 message(STATUS "  Data type: ${dtype}")
 message(STATUS "  Device: ${device_name}")
 message(STATUS "  Design: ${design_name}")
@@ -127,9 +127,9 @@ set(warning_flags
     "-Wno-unknown-attributes")
 set(kernel_defines
     "-D${dtype}_${dtype}_ONLY"
-    "-DDIM_M=${m}" 
-    "-DDIM_K=${k}" 
-    "-DDIM_N=${n}"
+    "-DDIM_M=${B_q}" 
+    "-DDIM_K=${d}" 
+    "-DDIM_N=${B_kv}"
     # "-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16"
 )
 
@@ -238,9 +238,7 @@ add_custom_command(
     COMMAND ${python_executable} ${CMAKE_SOURCE_DIR}/${design_name}.py
         --heads ${heads}
         --S_q ${S_q} --S_kv ${S_kv} -d ${d}
-        -m ${m} -k ${k} -n ${n}
-        --dev ${device_name}
-        --dtype ${dtype}
+        --B_q ${B_q} --B_kv ${B_kv}
         --trace_size 0 ${verbose_string} 
         --output_file_path ${mlir_target}
     DEPENDS ${CMAKE_SOURCE_DIR}/${design_name}.py
@@ -253,9 +251,7 @@ add_custom_command(
     COMMAND ${python_executable} ${CMAKE_SOURCE_DIR}/${design_name}.py
         --heads ${heads}
         --S_q ${S_q} --S_kv ${S_kv} -d ${d}
-        -m ${m} -k ${k} -n ${n}
-        --dev ${device_name}
-        --dtype ${dtype}
+        --B_q ${B_q} --B_kv ${B_kv}
         --trace_size ${trace_size} ${verbose_string} 
         --output_file_path ${mlir_target}
     DEPENDS ${CMAKE_SOURCE_DIR}/${design_name}.py

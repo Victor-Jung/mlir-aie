@@ -95,7 +95,7 @@ void partial_softmax_alias_bf16(bfloat16 *restrict input_vector,
                          float *restrict scale_buffer,
                          const int32_t vector_size,
                          const int32_t row_idx,
-                         const int32_t row_size) {
+                         const int32_t num_rows) {
   event0();
   ::aie::set_rounding(aie::rounding_mode::conv_even);
 
@@ -135,10 +135,10 @@ void partial_softmax_alias_bf16(bfloat16 *restrict input_vector,
   
   // Compute m_{i}
   if (max_val > scale_buffer[row_idx]) {
-    scale_buffer[row_size + row_idx] = max_val;
+    scale_buffer[num_rows + row_idx] = max_val;
   }
   else{
-    scale_buffer[row_size + row_idx] = scale_buffer[row_idx];
+    scale_buffer[num_rows + row_idx] = scale_buffer[row_idx];
     max_val = scale_buffer[row_idx];
   }
 
@@ -162,17 +162,17 @@ void partial_softmax_alias_bf16(bfloat16 *restrict input_vector,
   // col_sum_inv = aie::inv(accum_exp_val);
 
   aie::accum<accfloat, 16> l_i_accum = aie::zeros<accfloat, 16>();
-  aie::vector<float, 16> vect_in = aie::broadcast<float, 16>(scale_buffer[row_idx] - scale_buffer[row_size + row_idx]);
+  aie::vector<float, 16> vect_in = aie::broadcast<float, 16>(scale_buffer[row_idx] - scale_buffer[num_rows + row_idx]);
   l_i_accum = aie::exp2<bfloat16>(vect_in);
   auto it_out_scale = aie::begin_restrict_vector<SM_VEC_LEN>((bfloat16 *)input_vector);
   *it_out_scale = l_i_accum.to_vector<bfloat16>();
 
   // Store l_{i}
-  scale_buffer[2*row_size + row_idx] = input_vector[0]*scale_buffer[2*row_size + row_idx] + accum_exp_val;
+  scale_buffer[2*num_rows + row_idx] = input_vector[0]*scale_buffer[2*num_rows + row_idx] + accum_exp_val;
   // Store exp(m_{i-1} - m_{i}) for next step
-  scale_buffer[3*row_size + row_idx] = input_vector[0];
+  scale_buffer[3*num_rows + row_idx] = input_vector[0];
   // Store the current m_{i} to become m_{i-1} in the next step
-  scale_buffer[row_idx] = scale_buffer[row_size + row_idx];
+  scale_buffer[row_idx] = scale_buffer[num_rows + row_idx];
 
   event1();
 
@@ -194,8 +194,8 @@ void partial_softmax_bf16(bfloat16 *restrict input,
                          float *restrict scale_buffer,
                          const int32_t input_size,
                          const int32_t row_idx,
-                        const int32_t row_size) {
-    partial_softmax_alias_bf16(input, output, scale_buffer, input_size, row_idx, row_size);
+                        const int32_t num_rows) {
+    partial_softmax_alias_bf16(input, output, scale_buffer, input_size, row_idx, num_rows);
   }
 
 } // extern "C"

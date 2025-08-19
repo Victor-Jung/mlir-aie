@@ -30,11 +30,11 @@ def generate_random_data(heads, S_q, S_kv, d, dtype, seed=42, verbose: bool = Fa
     
     if dtype in ["bf16", "f32"]:
         
-        # val_range = 4
+        val_range = 4
         
-        Q = torch.rand(heads, S_q, d, dtype=torch.float32) #* val_range - val_range/2
-        K = torch.rand(heads, S_kv, d, dtype=torch.float32) #* val_range - val_range/2
-        V = torch.rand(heads, S_kv, d, dtype=torch.float32) #* val_range - val_range/2
+        Q = torch.rand(heads, S_q, d, dtype=torch.float32) * val_range
+        K = torch.rand(heads, S_kv, d, dtype=torch.float32) * val_range
+        V = torch.rand(heads, S_kv, d, dtype=torch.float32) * val_range
         
         debug_const = 5
         

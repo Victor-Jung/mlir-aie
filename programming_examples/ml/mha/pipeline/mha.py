@@ -43,17 +43,12 @@ def main():
         prog="AIE Matrix Multiplication MLIR Design (Single Core)",
         description="Emits MLIR code for a matrix multiplication design of the given input size",
     )
-    argparser.add_argument("--dev", type=str, choices=["npu", "npu2"], default="npu")
     argparser.add_argument("--heads", type=int, default=1)
     argparser.add_argument("--S_q", type=int, default=256)
     argparser.add_argument("--S_kv", type=int, default=256)
     argparser.add_argument("-d", type=int, default=64)
-    argparser.add_argument("-m", type=int, default=64)
-    argparser.add_argument("-k", type=int, default=64)
-    argparser.add_argument("-n", type=int, default=64)
-    argparser.add_argument(
-        "--dtype", type=str, choices=["bf16", "f32"], default="bf16"
-    )
+    argparser.add_argument("--B_q", type=int, default=64)
+    argparser.add_argument("--B_kv", type=int, default=64)
     argparser.add_argument("--emulate-bf16-mmul-with-bfp16", type=bool, default=False)
     argparser.add_argument("--trace_size", type=int, default=0)
     argparser.add_argument("--output_file_path", type=str, default = base_dir / "build" / f"my_mha.mlir", help="Output file path for the generated MLIR module")
@@ -61,15 +56,12 @@ def main():
     
     args = argparser.parse_args()
     maybe_module = batched_matmul_single_core(
-        args.dev,
         args.heads,
         args.S_q,
         args.S_kv,
         args.d,
-        args.m,
-        args.k,
-        args.n,
-        args.dtype,
+        args.B_q,
+        args.B_kv,
         args.emulate_bf16_mmul_with_bfp16,
         args.trace_size,
         args.verbose
@@ -85,15 +77,12 @@ def main():
         print(f"MLIR module written to {output_file_path}")
 
 def batched_matmul_single_core(
-    dev: str,
     heads: int,
     S_q: int,
     S_kv: int,
     d: int,
-    m: int,
-    k: int,
-    n: int,
-    dtype_str: str,
+    B_q: int,
+    B_kv: int,
     emulate_bf16_mmul_with_bfp16: bool,
     trace_size: int = 0,
     verbose: bool = False,
@@ -105,43 +94,34 @@ def batched_matmul_single_core(
     
     enable_tracing = True if trace_size > 0 else False
 
+    dtype_str = "bf16"
+    dev = "npu2"
+
     # r, s, t are the dimensions required by the microkernel MAC instructions.
     mac_dims = microkernel_mac_dim_map[dev][dtype_str]
-    if dev == "npu2" and dtype_str == "bf16":
-        r, s, t = mac_dims[emulate_bf16_mmul_with_bfp16]
-    else:
-        r, s, t = mac_dims
+    r, s, t = mac_dims[emulate_bf16_mmul_with_bfp16]
 
     if verbose:
         print(f"Device: {dev}")
         print(f"Number of heads: {heads}")
-        print(f"MHA Dimensions: S_q={S_q}, S_kv={S_kv}, d={d}, m={m}, k={k}, n={n}")
+        print(f"MHA Dimensions: S_q={S_q}, S_kv={S_kv}, d={d}, B_q={B_q}, B_kv={B_kv}")
         print(f"Data type: {dtype_str}")
         print(f"Microkernel MAC dimensions: r={r}, s={s}, t={t}")
         print(f"Vectorized: {vectorized}")
         print(f"Enable tracing: {enable_tracing}")
         
     assert heads > 0, "Number of heads must be greater than 0"
-    assert S_q % m == 0, f"M must be divisible by m ({S_q} % {m} != 0)"
-    assert S_kv % n == 0, f"N must be divisible by n ({S_kv} % {n} != 0)"
-    assert d % k == 0, f"K must be divisible by k ({d} % {k} != 0)"
+    assert S_q % B_q == 0, f"S_q must be divisible by B_q ({S_q} % {B_q} != 0)"
+    assert S_kv % B_kv == 0, f"S_kv must be divisible by B_kv ({S_kv} % {B_kv} != 0)"
     
-    assert m % r == 0, f"m must be divisible by r ({m} % {r} != 0)"
-    assert k % s == 0, f"k must be divisible by s ({k} % {s} != 0)"
-    assert n % t == 0, f"n must be divisible by t ({n} % {t} != 0)"
+    assert B_q % r == 0, f"B_q must be divisible by r ({B_q} % {r} != 0)"
+    assert B_kv % t == 0, f"B_kv must be divisible by t ({B_kv} % {t} != 0)"
+    assert d % s == 0, f"d must be divisible by s ({d} % {s} != 0)"
 
     dtype = dtype_map[dtype_str]
 
-    assert np.issubdtype(dtype, np.integer) == np.issubdtype(
-        dtype, np.integer
-    ), f"Input dtype ({dtype}) and output dtype ({dtype}) must either both be integer or both be float"
-    assert (
-        np.dtype(dtype).itemsize >= np.dtype(dtype).itemsize
-    ), f"Output dtype ({dtype}) must be equal or larger to input dtype ({dtype})"
-
-    S_q_div_m = S_q // m
-    S_kv_div_n = S_kv // n
-    d_div_k = d // k
+    num_q_blocks = S_q // B_q
+    num_kv_blocks = S_kv // B_kv
     
     inv_scale = 1 / np.sqrt(d)
 
@@ -150,13 +130,13 @@ def batched_matmul_single_core(
     KV_ty = np.ndarray[(heads * S_kv * d,), np.dtype[dtype]]
     A_ty = np.ndarray[(heads * S_q * S_kv,), np.dtype[dtype]]
     
-    # Tensors living in Mem Tiles
-    q_ty = np.ndarray[(m, k), np.dtype[dtype]]
-    k_ty = np.ndarray[(k, n), np.dtype[dtype]]
-    qk_ty = np.ndarray[(m, n), np.dtype[dtype]]
-    s_ty = np.ndarray[(4*m,), np.dtype[np.float32]]
+    # Tensors living on the AIE-array
+    q_ty = np.ndarray[(B_q, d), np.dtype[dtype]]
+    k_ty = np.ndarray[(d, B_kv), np.dtype[dtype]]
+    qk_ty = np.ndarray[(B_q, B_kv), np.dtype[dtype]]
+    s_ty = np.ndarray[(4*B_q,), np.dtype[np.float32]]
     
-    # AIE Core Function declarations
+    # AIE kernel declarations
     func_type = "" if vectorized else "_scalar"
     bin_name = "kernels.a"
     
@@ -194,7 +174,7 @@ def batched_matmul_single_core(
     matmul_PV = Kernel(
         "matmul_PV",
         bin_name,
-        [qk_ty, k_ty, qk_ty, s_ty, np.int32, np.int32, np.int32],
+        [qk_ty, k_ty, qk_ty, s_ty, np.int32, np.int32],
     )
     
     rescale_O = Kernel(
@@ -208,27 +188,27 @@ def batched_matmul_single_core(
     inQ = ObjectFifo(q_ty, name="inQ")
     q_dims = None
     if vectorized:
-        q_dims = [(m // r, r * k), (k // s, s), (r, k), (s, 1)]
+        q_dims = [(B_q // r, r * d), (d // s, s), (r, d), (s, 1)]
     memQ = inQ.cons().forward(name="memQ",  dims_to_stream=q_dims) # Forward DRAM -> Mem tile -> L1
 
     # Input K, in col major format (so we can skip the transpose)
     inK = ObjectFifo(k_ty, name="inK")
     k_dims = None
     if vectorized:
-        k_dims = [(n // t, t * k), (k // s, s), (t, k), (s, 1)]
+        k_dims = [(B_kv // t, t * d), (d // s, s), (t, d), (s, 1)]
     memK = inK.cons().forward(name="memK", dims_to_stream=k_dims)
         
     # Input V
     inV = ObjectFifo(k_ty, name="inV")
     v_dims = None
     if vectorized:
-        v_dims = [(k // s, s * n), (n // t, t), (s, n), (t, 1)]
+        v_dims = [(B_kv // s, s * B_kv), (B_kv // t, t), (s, B_kv), (t, 1)]
     memV = inV.cons().forward(name="memV", dims_to_stream=v_dims, placement=Tile(col=1, row=1))
 
     # Output QK
     qk_dims = None
     if vectorized:
-        qk_dims = [(m // r, r * n), (r, t), (n // t, r * t), (t, 1)]
+        qk_dims = [(B_q // r, r * B_kv), (r, t), (B_kv // t, r * t), (t, 1)]
     memQK = ObjectFifo(qk_ty, name="memQK")
     outQK = memQK.cons().forward(name="outQK", dims_to_stream=qk_dims)
     
@@ -243,7 +223,7 @@ def batched_matmul_single_core(
     memO = ObjectFifo(qk_ty, name="memO")
     o_dims = None
     if vectorized:
-        o_dims = [(m // r, r * n), (r, t), (n // t, r * t), (t, 1)]
+        o_dims = [(B_q // r, r * B_kv), (r, t), (B_kv // t, r * t), (t, 1)]
     outO = memO.cons().forward(name="outO", dims_to_stream=o_dims, placement=Tile(col=1, row=1))
 
     def batched_matmul_qk(of_q, of_k, of_a_out, zero, matmul_QK):
@@ -261,23 +241,23 @@ def batched_matmul_single_core(
 
     def softmax(of_in_a, of_out_p, of_out_scale, partial_softmax, init_scale_buffer, memcopy_kernel_scale, memcopy_kernel_debug):
         
-        scale_buffer = LocalBuffer(initial_value=np.zeros(shape=(4*m,), dtype=np.float32))
+        scale_buffer = LocalBuffer(initial_value=np.zeros(shape=(4*B_q,), dtype=np.float32))
         
         for _ in range_(sys.maxsize):
             
             init_scale_buffer(scale_buffer, S_q)
             
-            for _ in range_(S_kv // m):
+            for _ in range_(num_kv_blocks):
                 
                 elt_of_out_p = of_out_p.acquire(1)
                 elt_of_in_a = of_in_a.acquire(1)
                 elt_of_out_scale = of_out_scale.acquire(1)
             
                 if debug_QK:
-                    memcopy_kernel_debug(elt_of_in_a, elt_of_out_p, m * k) # Debug
+                    memcopy_kernel_debug(elt_of_in_a, elt_of_out_p, B_q * d) # Debug
                 else:
-                    partial_softmax(elt_of_in_a, elt_of_out_p, scale_buffer, inv_scale, S_q, m)
-                    memcopy_kernel_scale(scale_buffer, elt_of_out_scale, 4*m)
+                    partial_softmax(elt_of_in_a, elt_of_out_p, scale_buffer, inv_scale, S_q, B_q)
+                    memcopy_kernel_scale(scale_buffer, elt_of_out_scale, 4*B_q)
             
                 of_in_a.release(1)
                 of_out_p.release(1)
@@ -295,42 +275,43 @@ def batched_matmul_single_core(
         elt_of_out_scale = of_scale.acquire(1)
         
         if debug_QK:
-            memcopy_kernel(elem_in_p, elem_o_out, m * k)
+            memcopy_kernel(elem_in_p, elem_o_out, B_q * d)
         else:
-            matmul_PV(elem_in_p, elem_in_v, elem_o_out, elt_of_out_scale, S_q, m, 0)
+            matmul_PV(elem_in_p, elem_in_v, elem_o_out, elt_of_out_scale, B_q, 0)
         
         of_p.release(1)
         of_v.release(1)
         of_scale.release(1)
         ###
         
-        if S_kv // m > 2:
-            elem_in_p = of_p.acquire(1)
-            elem_in_v = of_v.acquire(1)
-            elt_of_out_scale = of_scale.acquire(1)
-            
-            matmul_PV(elem_in_p, elem_in_v, elem_o_out, elt_of_out_scale, S_q, m, 1)
-            
-            of_p.release(1)
-            of_v.release(1)
-            of_scale.release(1)
+        if num_kv_blocks > 2:
+            for _ in range_(num_kv_blocks - 2):
+                elem_in_p = of_p.acquire(1)
+                elem_in_v = of_v.acquire(1)
+                elt_of_out_scale = of_scale.acquire(1)
+                
+                matmul_PV(elem_in_p, elem_in_v, elem_o_out, elt_of_out_scale, B_q, 1)
+                
+                of_p.release(1)
+                of_v.release(1)
+                of_scale.release(1)
         
         
         ### Last iteration, final rescaling
-        if S_kv // m > 1:
+        if num_kv_blocks > 1:
             elem_in_p = of_p.acquire(1)
             elem_in_v = of_v.acquire(1)
             elt_of_out_scale = of_scale.acquire(1)
             
-            matmul_PV(elem_in_p, elem_in_v, elem_o_out, elt_of_out_scale, S_q, m, 1)
+            matmul_PV(elem_in_p, elem_in_v, elem_o_out, elt_of_out_scale, B_q, 1)
             if not debug_QK:
-                rescale_O(elem_o_out, elt_of_out_scale, m)
+                rescale_O(elem_o_out, elt_of_out_scale, B_q)
             
             of_p.release(1)
             of_v.release(1)
             of_scale.release(1)
         else:
-            rescale_O(elem_o_out, elt_of_out_scale, m)
+            rescale_O(elem_o_out, elt_of_out_scale, B_q)
         ###
             
         
@@ -384,15 +365,15 @@ def batched_matmul_single_core(
     
     # Define tensor access patterns for inputs/outputs
     # A and B are tiled across M and N respectively, while C is tiled across M and N
-    Q_tiles = TensorTiler2D.group_tiler((heads * S_q, d), (m, k), (1, d_div_k))
+    Q_tiles = TensorTiler2D.group_tiler((heads * S_q, d), (B_q, d), (1, 1))
     
-    K_tiles = TensorTiler2D.group_tiler((heads* S_kv, d), (n, k), (1, d_div_k))
+    K_tiles = TensorTiler2D.group_tiler((heads* S_kv, d), (B_kv, d), (1, 1))
     
-    V_tiles = TensorTiler2D.group_tiler((heads* S_kv, d), (n, k), (1, d_div_k))
+    V_tiles = TensorTiler2D.group_tiler((heads* S_kv, d), (B_kv, d), (1, 1))
 
-    QK_tiles = TensorTiler2D.group_tiler((heads * S_q, S_kv), (m, n), (1, d_div_k))
+    QK_tiles = TensorTiler2D.group_tiler((heads * S_q, S_kv), (B_q, B_kv), (1, 1))
     
-    O_tiles = TensorTiler2D.group_tiler((heads * S_q, d), (m, n), (1, 1))
+    O_tiles = TensorTiler2D.group_tiler((heads * S_q, d), (B_q, B_kv), (1, 1))
         
     def print_tap_seq_info(tap_seq, name):
         for idx, tap in enumerate(tap_seq):
@@ -417,8 +398,8 @@ def batched_matmul_single_core(
         rt.start(softmax_worker)
         rt.start(matmul_av_worker)
 
-        Q_idx = [i for i in range(heads * S_q_div_m) for _ in range(S_kv_div_n)]  
-        K_idx = [i + S_kv_div_n*h for h in range(heads) for _ in range(S_q_div_m) for i in range(S_kv_div_n)]
+        Q_idx = [i for i in range(heads * num_q_blocks) for _ in range(num_kv_blocks)]  
+        K_idx = [i + num_kv_blocks*h for h in range(heads) for _ in range(num_q_blocks) for i in range(num_kv_blocks)]
         
         print(f"Q_idx: {Q_idx}")
         print(f"K_idx: {K_idx}")

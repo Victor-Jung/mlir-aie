@@ -55,19 +55,19 @@ extern "C" {
         matmul_scalar_bf16_bf16(a_in, b_in, c_out);
     }
 
-    void matmul_PV(bfloat16 *Q, bfloat16 *K, bfloat16 *out, float *scale_buffer, const int32_t S_q, const int32_t S_kv, int32_t first_iter) {
+    void matmul_PV(bfloat16 *Q, bfloat16 *K, bfloat16 *out, float *scale_buffer, const int32_t B_q, int32_t first_iter) {
         
         // ::aie::set_saturation(aie::saturation_mode::saturate);
         ::aie::set_rounding(ROUNDING_MODE);
 
-        // VJUNG: Scale O_{i-1} by 1/exp(m_{i-1} - m_{i}) store in scale_buffer[3*S_kv:3*S_kv + S_kv]
+        // VJUNG: Scale O_{i-1} by 1/exp(m_{i-1} - m_{i}) store in scale_buffer[3*B_q:3*B_q + B_q]
         // VJUNG: Skip this for the first iteration as 1/exp(m_{i-1} - m_{i}) degenerates to inf due to m intizalized to -inf
         if (first_iter != 0) {
             for(int32_t l = 0; l < 4; l++){
                 for(int32_t k = 0; k < 4; k++){ // Iterate for 4 rows 
                     for(int32_t j = 0; j < 2; j++){ // Each row is broken down into 2 blocks of 8
                         for (int32_t i = 0; i < 8; i++) {
-                            out[i + j*32 + k*8 + l*64] = out[i + j*32 + k*8 + l*64] * scale_buffer[3*S_kv + (k + l*4)];
+                            out[i + j*32 + k*8 + l*64] = out[i + j*32 + k*8 + l*64] * scale_buffer[3*B_q + (k + l*4)];
                         }
                     }
                 }
@@ -79,7 +79,7 @@ extern "C" {
     }
 
 
-    void rescale_O(bfloat16 *O, float *scale_buffer, int32_t S_kv) {
+    void rescale_O(bfloat16 *O, float *scale_buffer, int32_t B_q) {
 
         ::aie::set_rounding(ROUNDING_MODE);
 
@@ -91,7 +91,7 @@ extern "C" {
             for(int32_t k = 0; k < 4; k++){ // Iterate for 4 rows 
                 for(int32_t j = 0; j < 2; j++){ // Each row is broken down into 2 blocks of 8
                     for (int32_t i = 0; i < 8; i++) {
-                        O[i + j*32 + k*8 + l*64] = O[i + j*32 + k*8 + l*64] * aie::inv(scale_buffer[2*S_kv + (k + l*4)]);
+                        O[i + j*32 + k*8 + l*64] = O[i + j*32 + k*8 + l*64] * aie::inv(scale_buffer[2*B_q + (k + l*4)]);
                     }
                 }
             }
@@ -99,15 +99,15 @@ extern "C" {
     }
 
 
-    void partial_softmax(bfloat16 *A, bfloat16 *P, float *scale_buffer, float inv_scale, int32_t S_q, int32_t S_kv) {
+    void partial_softmax(bfloat16 *A, bfloat16 *P, float *scale_buffer, float inv_scale, int32_t B_q, int32_t B_kv) {
 
         ::aie::set_rounding(ROUNDING_MODE);
 
-        for (int32_t i = 0; i < S_q * S_kv; i++) {
+        for (int32_t i = 0; i < B_q * B_kv; i++) {
             A[i] = A[i] * inv_scale;
         }
-        for (int32_t i = 0; i < S_q; i++) {
-            partial_softmax_bf16(A + S_kv*i, P + S_kv*i, scale_buffer, S_kv, i, S_q);
+        for (int32_t i = 0; i < B_q; i++) {
+            partial_softmax_bf16(A + B_kv*i, P + B_kv*i, scale_buffer, B_kv, i, B_q);
         }
     }
 
