@@ -33,8 +33,6 @@
 #define DTYPE_ACT std::bfloat16_t
 #define DTYPE_ACC float
 
-using DTYPE_ACT = float;
-
 #define XSTR(X) STR(X)
 #define STR(X) #X
 
