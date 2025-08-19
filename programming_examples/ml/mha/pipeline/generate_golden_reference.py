@@ -30,12 +30,28 @@ def generate_random_data(heads, S_q, S_kv, d, dtype, seed=42, verbose: bool = Fa
     
     if dtype in ["bf16", "f32"]:
         
-        val_range = 4
+        # val_range = 4
         
-        # VJUNG: Random numbers should NOT be uniformly between 0 and 1, because that would make the matrix product AB always close to 1.
-        Q = torch.rand(heads, S_q, d, dtype=torch.float32) * val_range - val_range/2
-        K = torch.rand(heads, S_kv, d, dtype=torch.float32) * val_range - val_range/2
-        V = torch.rand(heads, S_kv, d, dtype=torch.float32) * val_range - val_range/2
+        Q = torch.rand(heads, S_q, d, dtype=torch.float32) #* val_range - val_range/2
+        K = torch.rand(heads, S_kv, d, dtype=torch.float32) #* val_range - val_range/2
+        V = torch.rand(heads, S_kv, d, dtype=torch.float32) #* val_range - val_range/2
+        
+        debug_const = 5
+        
+        Q[0, 0, 0] = debug_const
+        Q[0, 0, 8] = debug_const
+        Q[0, 8, 0] = debug_const
+        Q[0, 8, 8] = debug_const
+        
+        K[0, 0, 0] = debug_const
+        K[0, 0, 8] = debug_const
+        K[0, 8, 0] = debug_const
+        K[0, 8, 8] = debug_const
+        
+        V[0, 0, 0] = debug_const
+        V[0, 0, 8] = debug_const
+        V[0, 8, 0] = debug_const
+        V[0, 8, 8] = debug_const
     else:
         # For integer types, use uniform distribution
         if dtype == "i8":
@@ -75,7 +91,7 @@ def compute_golden_reference(Q, K, V):
         is_causal=False,
         scale=inv_scale
     ).to(torch.bfloat16)
-    O = X # Use torch official sdpa function as golden model
+    # O = X # Use torch official sdpa function as golden model
 
     # Debug  
     # O = QK

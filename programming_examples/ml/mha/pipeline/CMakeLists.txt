@@ -11,7 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
 # Configuration variables
 set(heads 1)
 set(S_q 16)
-set(S_kv 16)
+set(S_kv 64)
 set(d 16)
 set(m 16)
 set(k 16)
@@ -294,9 +294,6 @@ add_executable(${currentDesignTarget}
 
 target_compile_definitions(${currentDesignTarget} PUBLIC 
     DISABLE_ABI_CHECK=1
-    DTYPE_IN=${dtype_cpp}
-    DTYPE_OUT=${dtype_cpp}
-    DTYPE_ACC=${dtype_cpp}
 )
 
 target_include_directories (${currentDesignTarget} PUBLIC

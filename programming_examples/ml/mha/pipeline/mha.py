@@ -154,7 +154,7 @@ def batched_matmul_single_core(
     q_ty = np.ndarray[(m, k), np.dtype[dtype]]
     k_ty = np.ndarray[(k, n), np.dtype[dtype]]
     qk_ty = np.ndarray[(m, n), np.dtype[dtype]]
-    s_ty = np.ndarray[(4*m,), np.dtype[dtype]]
+    s_ty = np.ndarray[(4*m,), np.dtype[np.float32]]
     
     # AIE Core Function declarations
     func_type = "" if vectorized else "_scalar"
@@ -245,9 +245,6 @@ def batched_matmul_single_core(
     if vectorized:
         o_dims = [(m // r, r * n), (r, t), (n // t, r * t), (t, 1)]
     outO = memO.cons().forward(name="outO", dims_to_stream=o_dims, placement=Tile(col=1, row=1))
-    
-    print(f"Output layout transformation: {o_dims}")
-
 
     def batched_matmul_qk(of_q, of_k, of_a_out, zero, matmul_QK):
         
@@ -264,7 +261,7 @@ def batched_matmul_single_core(
 
     def softmax(of_in_a, of_out_p, of_out_scale, partial_softmax, init_scale_buffer, memcopy_kernel_scale, memcopy_kernel_debug):
         
-        scale_buffer = LocalBuffer(initial_value=np.zeros(shape=(4*m,), dtype=dtype))
+        scale_buffer = LocalBuffer(initial_value=np.zeros(shape=(4*m,), dtype=np.float32))
         
         for _ in range_(sys.maxsize):
             
@@ -306,17 +303,36 @@ def batched_matmul_single_core(
         of_v.release(1)
         of_scale.release(1)
         ###
-
-        # elem_in_p = of_p.acquire(1)
-        # elem_in_v = of_v.acquire(1)
-        # elt_of_out_scale = of_scale.acquire(1)
         
-        # matmul_PV(elem_in_p, elem_in_v, elem_o_out, elt_of_out_scale, S_q, m, 1)
-        rescale_O(elem_o_out, elt_of_out_scale, m)
+        if S_kv // m > 2:
+            elem_in_p = of_p.acquire(1)
+            elem_in_v = of_v.acquire(1)
+            elt_of_out_scale = of_scale.acquire(1)
+            
+            matmul_PV(elem_in_p, elem_in_v, elem_o_out, elt_of_out_scale, S_q, m, 1)
+            
+            of_p.release(1)
+            of_v.release(1)
+            of_scale.release(1)
         
-        # of_p.release(1)
-        # of_v.release(1)
-        # of_scale.release(1)
+        
+        ### Last iteration, final rescaling
+        if S_kv // m > 1:
+            elem_in_p = of_p.acquire(1)
+            elem_in_v = of_v.acquire(1)
+            elt_of_out_scale = of_scale.acquire(1)
+            
+            matmul_PV(elem_in_p, elem_in_v, elem_o_out, elt_of_out_scale, S_q, m, 1)
+            if not debug_QK:
+                rescale_O(elem_o_out, elt_of_out_scale, m)
+            
+            of_p.release(1)
+            of_v.release(1)
+            of_scale.release(1)
+        else:
+            rescale_O(elem_o_out, elt_of_out_scale, m)
+        ###
+            
         
         of_o_out.release(1)
 
@@ -372,12 +388,9 @@ def batched_matmul_single_core(
     
     K_tiles = TensorTiler2D.group_tiler((heads* S_kv, d), (n, k), (1, d_div_k))
     
-    V_tiles = TensorTiler2D.group_tiler(
-        (heads * d, S_kv), (k, n), (d_div_k, 1), 
-        tile_group_col_major=True
-    )
+    V_tiles = TensorTiler2D.group_tiler((heads* S_kv, d), (n, k), (1, d_div_k))
 
-    QK_tiles = TensorTiler2D.group_tiler((heads * S_q, S_kv), (m, n), (1, 1))
+    QK_tiles = TensorTiler2D.group_tiler((heads * S_q, S_kv), (m, n), (1, d_div_k))
     
     O_tiles = TensorTiler2D.group_tiler((heads * S_q, d), (m, n), (1, 1))
         
@@ -394,6 +407,8 @@ def batched_matmul_single_core(
         print_tap_seq_info(K_tiles, "K")
         print_tap_seq_info(V_tiles, "V")
         print_tap_seq_info(O_tiles, "O")
+        
+    print(f"O dims = {o_dims}")
 
     # Runtime operations to move data to/from the AIE-array
     rt = Runtime()

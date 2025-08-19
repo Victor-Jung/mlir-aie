@@ -21,7 +21,39 @@
 
 namespace golden_reference_verification {
 
-// Verify against PyTorch golden reference
+template <typename Tin, typename Tout, typename Tacc>
+void matmul(int M, int N, int K, const std::vector<Tin> A,
+            const std::vector<Tin> B, std::vector<Tout> &C, int b_col_maj) {
+  for (int row = 0; row < M; row++) {
+    for (int col = 0; col < N; col++) {
+      Tacc running_sum = 0;
+      for (int k = 0; k < K; k++) {
+        if (!b_col_maj) {
+          running_sum += Tacc(A[row * K + k] * B[k * N + col]);
+        } else {
+          running_sum += Tacc(A[row * K + k] * B[k + col * K]);
+        }
+      }
+      C[row * N + col] = Tout(running_sum);
+    }
+  }
+}
+
+// template <typename Tin, typename Tout, typename Tacc>
+// void mha_compute(const std::vector<Tin>& Q, const std::vector<Tin>& K, const std::vector<Tin>& V, std::vector<Tout>& O, int heads, int S_q, int S_kv, int d) {
+
+//     // VJUNG: Heads is one for now
+//     const float scale = 1.0f / std::sqrt(static_cast<float>(d));
+
+//     std::vector<Tout> QK(heads * S_q * S_kv);
+//     std::vector<Tout> A(heads * S_q * S_kv);
+//     std::vector<Tout> QK(heads * S_q * S_kv);
+
+//     matmul<Tin, Tin, Tacc>(S_q, S_kv, d, Q, K, QK, 1);
+
+// }
+
+
 template <typename Tin, typename Tout, typename Tacc>
 int verify_against_golden(const std::vector<Tout>& C, int verbosity = 0, 
                          float abs_tol = 0.05, float rel_tol = 0.05) {
@@ -41,12 +73,22 @@ int verify_against_golden(const std::vector<Tout>& C, int verbosity = 0,
     std::vector<matmul_common::error<Tout>> errors;
     Tout max_rel_error = (Tout)0.0f;
 
+    std::vector<Tin> Q_vec(golden_reference::Q.begin(), golden_reference::Q.end());
+    std::vector<Tin> K_vec(golden_reference::K.begin(), golden_reference::K.end());
+    std::vector<Tin> V_vec(golden_reference::V.begin(), golden_reference::V.end());
+    std::vector<Tout> C_vec(golden_reference::S_q * golden_reference::S_kv);
+
+    matmul<Tin, Tin, Tacc>(golden_reference::S_q, golden_reference::S_kv, golden_reference::d,
+           Q_vec, K_vec, C_vec, 1);
+
+
     std::cout << "Verifying size " << C.size() << std::endl;
     for (int head = 0; head < golden_reference::HEADS; head++) {
         for (int row = 0; row < golden_reference::S_q; row++) {
             for (int col = 0; col < golden_reference::d; col++) {
                 int idx = (head * golden_reference::S_q * golden_reference::d) + (row * golden_reference::S_q) + col;
                 Tout expected = (Tout)golden_reference::O[idx];
+                // Tout expected = (Tout)C_vec[idx];
                 Tout actual = C[idx];
 
                 average_error += std::abs(actual - expected);
@@ -87,6 +129,14 @@ int verify_against_golden(const std::vector<Tout>& C, int verbosity = 0,
         matmul_common::print_matrix(golden_vec, golden_reference::d, 16, 16);
         std::cout << std::endl << "Actual Output:" << std::endl;
         matmul_common::print_matrix(C, golden_reference::d, 16, 16);
+
+        std::cout << std::endl << "Difference:" << std::endl;
+        std::vector<Tout> diff(C.size());
+        for (int i = 0; i < C.size(); i++) {
+        diff[i] = golden_vec[i] - C[i];
+        }
+        matmul_common::print_matrix(diff, golden_reference::d, 16, 16, std::cout, " | ", " ... ",
+                                    6);
     }
     
     return n_errors;

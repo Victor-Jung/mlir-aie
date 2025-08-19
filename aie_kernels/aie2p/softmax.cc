@@ -92,11 +92,12 @@ void softmax_simple_bf16(bfloat16 *restrict input_vector,
 
 void partial_softmax_alias_bf16(bfloat16 *restrict input_vector,
                          bfloat16 *restrict output_vector,
-                         bfloat16 *restrict scale_buffer,
+                         float *restrict scale_buffer,
                          const int32_t vector_size,
                          const int32_t row_idx,
                          const int32_t row_size) {
   event0();
+  ::aie::set_rounding(aie::rounding_mode::conv_even);
 
   // VJUNG: We do 3 passes on the vector:
   // 1. Find the max value scaled by log2e in the vector
@@ -108,8 +109,6 @@ void partial_softmax_alias_bf16(bfloat16 *restrict input_vector,
   auto it_log_out = aie::begin_restrict_vector<SM_VEC_LEN>((bfloat16 *)input_vector);
   auto it_exp_in = aie::cbegin_restrict_vector<SM_VEC_LEN>((bfloat16 *)input_vector);
   auto it_exp_out = aie::begin_restrict_vector<SM_VEC_LEN>((bfloat16 *)output_vector);
-  auto it_scale = aie::cbegin_restrict_vector<SM_VEC_LEN>((bfloat16 *)output_vector);
-  auto it_soft_out = aie::begin_restrict_vector<SM_VEC_LEN>((bfloat16 *)output_vector);
   
   aie::vector<bfloat16, SM_VEC_LEN> in_elems, exp_val, input_bf16, log2e_vec, max_val_vec;
   aie::accum<accfloat, SM_VEC_LEN> out_vals, exp_val_accum, scaled_accum, exp_in_accum;
@@ -117,7 +116,7 @@ void partial_softmax_alias_bf16(bfloat16 *restrict input_vector,
   float max_val = 0;
   float accum_exp_val = 0;
   float running_max = 0;
-  bfloat16 col_sum_inv;
+  float col_sum_inv;
   const int elem_iters = vector_size / SM_VEC_LEN;
 
   exp_val_accum = aie::zeros<accfloat, SM_VEC_LEN>();
@@ -158,30 +157,22 @@ void partial_softmax_alias_bf16(bfloat16 *restrict input_vector,
     *it_exp_out++ = exp_val;
   }
 
-
-  // Final pass
   aie::vector<float, SM_VEC_LEN> reduce = exp_val_accum.to_vector<float>();
   accum_exp_val = aie::reduce_add(reduce);
-  col_sum_inv = (bfloat16)aie::inv(accum_exp_val);
-
-  for (int c = 0; c < elem_iters; c++) {
-    in_elems = *it_scale++;
-    // out_vals = aie::mul(in_elems, col_sum_inv);
-    *it_soft_out++ = in_elems; //out_vals.to_vector<bfloat16>();
-  }
+  // col_sum_inv = aie::inv(accum_exp_val);
 
   aie::accum<accfloat, 16> l_i_accum = aie::zeros<accfloat, 16>();
   aie::vector<float, 16> vect_in = aie::broadcast<float, 16>(scale_buffer[row_idx] - scale_buffer[row_size + row_idx]);
   l_i_accum = aie::exp2<bfloat16>(vect_in);
-  *it_log_out = l_i_accum.to_vector<bfloat16>();
+  auto it_out_scale = aie::begin_restrict_vector<SM_VEC_LEN>((bfloat16 *)input_vector);
+  *it_out_scale = l_i_accum.to_vector<bfloat16>();
 
   // Store l_{i}
-  scale_buffer[2*row_size + row_idx] = input_vector[0]*scale_buffer[2*row_size + row_idx] + (bfloat16)accum_exp_val;
+  scale_buffer[2*row_size + row_idx] = input_vector[0]*scale_buffer[2*row_size + row_idx] + accum_exp_val;
   // Store exp(m_{i-1} - m_{i}) for next step
   scale_buffer[3*row_size + row_idx] = input_vector[0];
   // Store the current m_{i} to become m_{i-1} in the next step
   scale_buffer[row_idx] = scale_buffer[row_size + row_idx];
-
 
   event1();
 
@@ -200,7 +191,7 @@ void softmax_bf16(bfloat16 *restrict input,
 
 void partial_softmax_bf16(bfloat16 *restrict input, 
                          bfloat16 *restrict output,
-                         bfloat16 *restrict scale_buffer,
+                         float *restrict scale_buffer,
                          const int32_t input_size,
                          const int32_t row_idx,
                         const int32_t row_size) {

@@ -21,11 +21,11 @@ extern "C" {
     void matmul_scalar_bf16_bf16(bfloat16 *a_in, bfloat16 *b_in, bfloat16 *c_out);
     void matmul_bf16_bf16(bfloat16 *a_in, bfloat16 *b_in, bfloat16 *c_out);
     void matmul_bf16_bf16_rowmaj(bfloat16 *a_in, bfloat16 *b_in, bfloat16 *c_out);
-    void partial_softmax_bf16(bfloat16 *input, bfloat16 *output, bfloat16 *scale_buffer, const int32_t input_size, const int32_t row_idx, const int32_t row_size);
+    void partial_softmax_bf16(bfloat16 *input, bfloat16 *output, float *scale_buffer, const int32_t input_size, const int32_t row_idx, const int32_t row_size);
     void passThroughLine(int16_t *in, int16_t *out, int32_t lineWidth);
 
     // VJUNG: Regular PassThroughLine crashes on aie211
-    void passThroughLineScalar(bfloat16 *in, bfloat16 *out, int32_t lineWidth) {
+    void passThroughLineScalar(float *in, float *out, int32_t lineWidth) {
 
         ::aie::set_rounding(ROUNDING_MODE);
 
@@ -55,7 +55,7 @@ extern "C" {
         matmul_scalar_bf16_bf16(a_in, b_in, c_out);
     }
 
-    void matmul_PV(bfloat16 *Q, bfloat16 *K, bfloat16 *out, bfloat16 *scale_buffer, const int32_t S_q, const int32_t S_kv, int32_t first_iter) {
+    void matmul_PV(bfloat16 *Q, bfloat16 *K, bfloat16 *out, float *scale_buffer, const int32_t S_q, const int32_t S_kv, int32_t first_iter) {
         
         // ::aie::set_saturation(aie::saturation_mode::saturate);
         ::aie::set_rounding(ROUNDING_MODE);
@@ -79,7 +79,7 @@ extern "C" {
     }
 
 
-    void rescale_O(bfloat16 *O, bfloat16 *scale_buffer, int32_t S_kv) {
+    void rescale_O(bfloat16 *O, float *scale_buffer, int32_t S_kv) {
 
         ::aie::set_rounding(ROUNDING_MODE);
 
@@ -99,29 +99,29 @@ extern "C" {
     }
 
 
-    void partial_softmax(bfloat16 *A, bfloat16 *P, bfloat16 *scale_buffer, float inv_scale, int32_t S_q, int32_t S_kv) {
+    void partial_softmax(bfloat16 *A, bfloat16 *P, float *scale_buffer, float inv_scale, int32_t S_q, int32_t S_kv) {
 
         ::aie::set_rounding(ROUNDING_MODE);
 
         for (int32_t i = 0; i < S_q * S_kv; i++) {
-            A[i] = A[i] * bfloat16(inv_scale);
+            A[i] = A[i] * inv_scale;
         }
         for (int32_t i = 0; i < S_q; i++) {
             partial_softmax_bf16(A + S_kv*i, P + S_kv*i, scale_buffer, S_kv, i, S_q);
         }
     }
 
-    void init_scale_buffer(bfloat16 *scale_buffer, int32_t size) {
+    void init_scale_buffer(float *scale_buffer, int32_t size) {
         // VJUNG: TODO: Vectorize
         ::aie::set_rounding(ROUNDING_MODE);
 
         // VJUNG: m_{i-1} vector
         for (int32_t i = 0; i < size; i++) {
-            scale_buffer[i] = bfloat16(std::numeric_limits<bfloat16>::lowest());
+            scale_buffer[i] = std::numeric_limits<float>::lowest();
         }
         // VJUNG: m_{i} vector
         for (int32_t i = 0; i < size; i++) {
-            scale_buffer[i + size] = bfloat16(std::numeric_limits<bfloat16>::lowest());
+            scale_buffer[i + size] = std::numeric_limits<float>::lowest();
         }
         // VJUNG: l_{i} vector
         for (int32_t i = 0; i < size; i++) {
