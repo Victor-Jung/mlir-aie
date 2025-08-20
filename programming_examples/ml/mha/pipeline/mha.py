@@ -369,9 +369,9 @@ def batched_matmul_single_core(
     # A and B are tiled across M and N respectively, while C is tiled across M and N
     Q_tiles = TensorTiler2D.group_tiler((heads * S_q, d), (B_q, d), (1, 1))
     
-    K_tiles = TensorTiler2D.group_tiler((heads* S_kv, d), (B_kv, d), (1, 1))
+    K_tiles = TensorTiler2D.group_tiler((heads* S_kv, d), (S_kv, d), (1, 1))
     
-    V_tiles = TensorTiler2D.group_tiler((heads* S_kv, d), (B_kv, d), (1, 1))
+    V_tiles = TensorTiler2D.group_tiler((heads* S_kv, d), (S_kv, d), (1, 1))
     
     O_tiles = TensorTiler2D.group_tiler((heads * S_q, d), (B_q, d), (1, 1))
         
@@ -388,8 +388,15 @@ def batched_matmul_single_core(
         print_tap_seq_info(K_tiles, "K")
         print_tap_seq_info(V_tiles, "V")
         print_tap_seq_info(O_tiles, "O")
-        
-    print(f"O dims = {o_dims}")
+            
+    def fixup_tiles(tile_list):
+        for tile in tile_list:
+            tile._sizes = [1, 1, 512, 128] # [1, 1, 1024, 64]
+            tile._strides = [0, 0, 128, 1] # [0, 0, 64, 1]
+    
+    # Need to use this when one head is larger than 1024x1024, should be done by the compiler
+    fixup_tiles(K_tiles)
+    fixup_tiles(V_tiles)    
 
     # Runtime operations to move data to/from the AIE-array
     rt = Runtime()
@@ -404,13 +411,12 @@ def batched_matmul_single_core(
                 rt.fill(inQ.prod(), Q, tap=Q_tiles[head_idx*num_q_blocks + q_block_idx], placement = Tile(col = 0, row = 0))
                 
                 # for kv_block_idx in range(num_kv_blocks):
-                    
                 #     rt.fill(inK.prod(), K, tap=K_tiles[head_idx*num_kv_blocks + kv_block_idx], placement = Tile(col = 0, row = 0))
                 #     rt.fill(inV.prod(), V, tap=V_tiles[head_idx*num_kv_blocks + kv_block_idx], placement = Tile(col = 1, row = 0))
                 
                 # Thow on bd containing the full K and V in the object fifo, then does it transfer cunks of inKV size at the time?
-                rt.fill(inK.prod(), K, tap=None, placement = Tile(col = 0, row = 0))
-                rt.fill(inV.prod(), V, tap=None, placement = Tile(col = 1, row = 0))
+                rt.fill(inK.prod(), K, tap=K_tiles[head_idx], placement = Tile(col = 0, row = 0))
+                rt.fill(inV.prod(), V, tap=V_tiles[head_idx], placement = Tile(col = 1, row = 0))
                     
                 rt.drain(outO.cons(), O, tap=O_tiles[head_idx*num_q_blocks + q_block_idx], wait=True, placement = Tile(col = 0, row = 0))
                 
