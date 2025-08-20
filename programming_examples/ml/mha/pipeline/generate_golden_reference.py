@@ -21,39 +21,27 @@ CPP_DTYPE_MAP = {
     "i32": "int32_t",
 }
 
-def generate_random_data(heads, S_q, S_kv, d, dtype, seed=42, verbose: bool = False):
+def generate_random_data(heads, S_q, S_kv, num_kv_heads, d, dtype, seed=42, verbose: bool = False):
     """Generate random input matrices A and B."""
     torch.manual_seed(seed)
     np.random.seed(seed)
     
     torch_dtype = DTYPE_MAP[dtype]
     
-    if dtype in ["bf16", "f32"]:
-        
-        val_range = 4
-        
-        Q = torch.rand(heads, S_q, d, dtype=torch.float32) * val_range
-        K = torch.rand(heads, S_kv, d, dtype=torch.float32) * val_range
-        V = torch.rand(heads, S_kv, d, dtype=torch.float32) * val_range
-
-    else:
-        # For integer types, use uniform distribution
-        if dtype == "i8":
-            Q = torch.randint(-128, 127, (heads, S_q, d), dtype=torch_dtype)
-            K = torch.randint(-128, 127, (heads, S_kv, d), dtype=torch_dtype)
-            V = torch.randint(-128, 127, (heads, S_kv, d), dtype=torch_dtype)
-        elif dtype == "i16":
-            Q = torch.randint(-2**15, 2**15 - 1, (heads, S_q, d), dtype=torch_dtype)
-            K = torch.randint(-2**15, 2**15 - 1, (heads, S_kv, d), dtype=torch_dtype)
-            V = torch.randint(-2**15, 2**15 - 1, (heads, S_kv, d), dtype=torch_dtype)
-        else:
-            Q = torch.randint(-1000, 1000, (heads, S_q, d), dtype=torch_dtype)
-            K = torch.randint(-1000, 1000, (heads, S_kv, d), dtype=torch_dtype)
-            V = torch.randint(-1000, 1000, (heads, S_kv, d), dtype=torch_dtype)
+    val_range = 4
+    
+    Q = torch.rand(heads, S_q, d, dtype=torch.float32) * val_range
+    K = torch.rand(num_kv_heads, S_kv, d, dtype=torch.float32) * val_range
+    V = torch.rand(num_kv_heads, S_kv, d, dtype=torch.float32) * val_range
+    
+    number_of_groups = heads // num_kv_heads
+    
+    K = K.repeat_interleave(number_of_groups, dim=0)
+    V = V.repeat_interleave(number_of_groups, dim=0)
 
     return Q, K, V
 
-def compute_golden_reference(Q, K, V):
+def compute_golden_reference(Q, K, V, heads, num_kv_heads):
     """Compute the golden reference using PyTorch matmul."""
     inv_scale = 1 / np.sqrt(K.shape[-1])
     
@@ -104,7 +92,7 @@ def tensor_to_header(tensor: torch.tensor, cpp_dtype: str, name: str) -> str:
     ret += "\n};"
     return ret
 
-def export_to_header(Q, K, V, QK, QK_scaled, A, O, heads, S_q, S_kv, d, dtype, header_path, verbose: bool = False):
+def export_to_header(Q, K, V, QK, QK_scaled, A, O, heads, S_q, S_kv, num_kv_heads, d, dtype, header_path, verbose: bool = False):
     """Export matrices to C++ header file."""
     cpp_dtype = CPP_DTYPE_MAP[dtype]
     
@@ -127,6 +115,7 @@ namespace golden_reference {{
 
 // MHA parameters
 constexpr int HEADS = {heads};
+constexpr int num_kv_heads = {num_kv_heads};
 constexpr int S_q = {S_q};
 constexpr int S_kv = {S_kv};
 constexpr int d = {d};
@@ -152,6 +141,7 @@ def main():
     parser.add_argument("--S_q", type=int, default=256, help="Sequence length for query (Q)")
     parser.add_argument("--S_kv", type=int, default=256, help="Sequence length for key/value (KV)")
     parser.add_argument("-d", type=int, default=256, help="Embedding dimension (d)")
+    parser.add_argument("--num_KV_heads", type=int, default=2, help="Number of heads for Key-Value pairs")
     parser.add_argument("--dtype", type=str, choices=["bf16", "f32"], 
                        default="bf16", help="Input data type")
     parser.add_argument("--output", type=str, default="golden_reference.h", 
@@ -161,22 +151,26 @@ def main():
     
     args = parser.parse_args()
     
+    num_kv_heads = args.num_KV_heads
+    if args.num_KV_heads == 0:
+        num_kv_heads = args.heads
+        
     if args.verbose:
         print(f"Generating golden reference for Multi-Head Attention with:")
         print(f"Heads: {args.heads}, S_q: {args.S_q}, S_kv: {args.S_kv}, d: {args.d}")
         print(f"Type: {args.dtype}")
 
-    Q, K, V = generate_random_data(args.heads, args.S_q, args.S_kv, args.d, args.dtype, args.seed, args.verbose)
+    Q, K, V = generate_random_data(args.heads, args.S_q, args.S_kv, num_kv_heads, args.d, args.dtype, args.seed, args.verbose)
     
     if args.verbose:
         print("Generated input tensors Q, K, and V")
 
-    QK, QK_scaled, A, O = compute_golden_reference(Q, K, V)
+    QK, QK_scaled, A, O = compute_golden_reference(Q, K, V, args.heads, num_kv_heads)
     
     if args.verbose:
         print("Computed golden references using PyTorch")
 
-    export_to_header(Q, K, V, QK, QK_scaled, A, O, args.heads, args.S_q, args.S_kv, args.d, args.dtype, args.output, args.verbose)
+    export_to_header(Q, K, V, QK, QK_scaled, A, O, args.heads, args.S_q, args.S_kv, num_kv_heads, args.d, args.dtype, args.output, args.verbose)
     
     if args.verbose:
         print(f"Exported golden reference to {args.output}")

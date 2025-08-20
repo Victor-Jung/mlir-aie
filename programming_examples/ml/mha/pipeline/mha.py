@@ -49,12 +49,14 @@ def main():
     argparser.add_argument("-d", type=int, default=64)
     argparser.add_argument("--B_q", type=int, default=64)
     argparser.add_argument("--B_kv", type=int, default=64)
+    argparser.add_argument("--num_KV_heads", type=int, default=2, help="Number of heads for Key-Value pairs")
     argparser.add_argument("--emulate-bf16-mmul-with-bfp16", type=bool, default=False)
     argparser.add_argument("--trace_size", type=int, default=0)
     argparser.add_argument("--output_file_path", type=str, default = base_dir / "build" / f"my_mha.mlir", help="Output file path for the generated MLIR module")
     argparser.add_argument("--verbose", action="store_true", help="Enable verbose output")
     
     args = argparser.parse_args()
+    
     maybe_module = batched_matmul_single_core(
         args.heads,
         args.S_q,
@@ -62,6 +64,7 @@ def main():
         args.d,
         args.B_q,
         args.B_kv,
+        args.num_KV_heads,
         args.emulate_bf16_mmul_with_bfp16,
         args.trace_size,
         args.verbose
@@ -83,6 +86,7 @@ def batched_matmul_single_core(
     d: int,
     B_q: int,
     B_kv: int,
+    num_KV_heads: int,
     emulate_bf16_mmul_with_bfp16: bool,
     trace_size: int = 0,
     verbose: bool = False,
@@ -97,6 +101,10 @@ def batched_matmul_single_core(
     dtype_str = "bf16"
     dev = "npu2"
 
+    # VJUNG: When the number of KV head is 0 we do a regular MHA, otherwise we do GQA.
+    if num_KV_heads == 0:
+        num_KV_heads = heads
+        
     # r, s, t are the dimensions required by the microkernel MAC instructions.
     mac_dims = microkernel_mac_dim_map[dev][dtype_str]
     r, s, t = mac_dims[emulate_bf16_mmul_with_bfp16]
@@ -110,7 +118,10 @@ def batched_matmul_single_core(
         print(f"Vectorized: {vectorized}")
         print(f"Enable tracing: {enable_tracing}")
         
+    assert num_KV_heads > 0, "Number of KV heads must be greater than 0"
     assert heads > 0, "Number of heads must be greater than 0"
+    assert num_KV_heads <= heads, "Number of KV heads must be less than or equal to number of heads"
+    assert heads % num_KV_heads == 0, f"Number of KV heads ({num_KV_heads}) must be divisible by number of heads ({heads})"
     assert S_q % B_q == 0, f"S_q must be divisible by B_q ({S_q} % {B_q} != 0)"
     assert S_kv % B_kv == 0, f"S_kv must be divisible by B_kv ({S_kv} % {B_kv} != 0)"
     
@@ -127,9 +138,8 @@ def batched_matmul_single_core(
 
     # Tensors living in DRAM
     Q_ty = np.ndarray[(heads * S_q * d,), np.dtype[dtype]]
-    KV_ty = np.ndarray[(heads * S_kv * d,), np.dtype[dtype]]
-    A_ty = np.ndarray[(heads * S_q * S_kv,), np.dtype[dtype]]
-    
+    KV_ty = np.ndarray[(num_KV_heads * S_kv * d,), np.dtype[dtype]]
+
     # Tensors living on the AIE-array
     q_ty = np.ndarray[(B_q, d), np.dtype[dtype]]
     k_ty = np.ndarray[(d, B_kv), np.dtype[dtype]]
@@ -395,12 +405,13 @@ def batched_matmul_single_core(
             tile._strides = [0, 0, 128, 1] # [0, 0, 64, 1]
     
     # Need to use this when one head is larger than 1024x1024, should be done by the compiler
-    fixup_tiles(K_tiles)
-    fixup_tiles(V_tiles)    
+    if S_q == 1024 and S_kv == 1024:
+        fixup_tiles(K_tiles)    
+        fixup_tiles(V_tiles)        
 
     # Runtime operations to move data to/from the AIE-array
     rt = Runtime()
-    with rt.sequence(Q_ty, KV_ty, KV_ty, KV_ty) as (Q, K, V, O):
+    with rt.sequence(Q_ty, KV_ty, KV_ty, Q_ty) as (Q, K, V, O):
         rt.start(matmul_worker)
         rt.start(softmax_worker)
         rt.start(matmul_av_worker)

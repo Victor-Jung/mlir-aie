@@ -9,7 +9,9 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 
 # Configuration variables
-set(heads 1)
+set(num_KV_heads 2)
+
+set(heads 4)
 set(S_q 1024)
 set(S_kv 1024)
 set(d 64)
@@ -52,6 +54,7 @@ endif()
 # Display configuration
 message(STATUS "Design Configuration:")
 message(STATUS "  Heads: ${heads}")
+message(STATUS "  Number of KV Heads: ${num_KV_heads}")
 message(STATUS "  Sequence Length Q: ${S_q}")
 message(STATUS "  Sequence Length KV: ${S_kv}")
 message(STATUS "  Embedding Dimension d: ${d}")
@@ -161,11 +164,11 @@ set(aiecc_flags
     "--aie-generate-npu-insts"
 )
 
-# Always use PyTorch golden reference
 add_custom_command(
     OUTPUT ${golden_ref_header}
     COMMAND ${python_executable} ${CMAKE_SOURCE_DIR}/generate_golden_reference.py
         --heads ${heads} --S_q ${S_q} --S_kv ${S_kv} -d ${d}
+        --num_KV_heads ${num_KV_heads}
         --dtype ${dtype}
         --output ${golden_ref_header} ${verbose_string}
     DEPENDS ${CMAKE_SOURCE_DIR}/generate_golden_reference.py
@@ -239,6 +242,7 @@ add_custom_command(
         --heads ${heads}
         --S_q ${S_q} --S_kv ${S_kv} -d ${d}
         --B_q ${B_q} --B_kv ${B_kv}
+        --num_KV_heads ${num_KV_heads}
         --trace_size 0 ${verbose_string} 
         --output_file_path ${mlir_target}
     DEPENDS ${CMAKE_SOURCE_DIR}/${design_name}.py
@@ -252,6 +256,7 @@ add_custom_command(
         --heads ${heads}
         --S_q ${S_q} --S_kv ${S_kv} -d ${d}
         --B_q ${B_q} --B_kv ${B_kv}
+        --num_KV_heads ${num_KV_heads}
         --trace_size ${trace_size} ${verbose_string} 
         --output_file_path ${mlir_target}
     DEPENDS ${CMAKE_SOURCE_DIR}/${design_name}.py
