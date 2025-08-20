@@ -403,10 +403,14 @@ def batched_matmul_single_core(
             for q_block_idx in range(num_q_blocks):
                 rt.fill(inQ.prod(), Q, tap=Q_tiles[head_idx*num_q_blocks + q_block_idx], placement = Tile(col = 0, row = 0))
                 
-                for kv_block_idx in range(num_kv_blocks):
+                # for kv_block_idx in range(num_kv_blocks):
                     
-                    rt.fill(inK.prod(), K, tap=K_tiles[head_idx*num_kv_blocks + kv_block_idx], placement = Tile(col = 0, row = 0))
-                    rt.fill(inV.prod(), V, tap=V_tiles[head_idx*num_kv_blocks + kv_block_idx], placement = Tile(col = 1, row = 0))
+                #     rt.fill(inK.prod(), K, tap=K_tiles[head_idx*num_kv_blocks + kv_block_idx], placement = Tile(col = 0, row = 0))
+                #     rt.fill(inV.prod(), V, tap=V_tiles[head_idx*num_kv_blocks + kv_block_idx], placement = Tile(col = 1, row = 0))
+                
+                # Thow on bd containing the full K and V in the object fifo, then does it transfer cunks of inKV size at the time?
+                rt.fill(inK.prod(), K, tap=None, placement = Tile(col = 0, row = 0))
+                rt.fill(inV.prod(), V, tap=None, placement = Tile(col = 1, row = 0))
                     
                 rt.drain(outO.cons(), O, tap=O_tiles[head_idx*num_q_blocks + q_block_idx], wait=True, placement = Tile(col = 0, row = 0))
                 

@@ -10,8 +10,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
 
 # Configuration variables
 set(heads 1)
-set(S_q 512)
-set(S_kv 512)
+set(S_q 1024)
+set(S_kv 1024)
 set(d 64)
 set(B_q 64)
 set(k 64)
