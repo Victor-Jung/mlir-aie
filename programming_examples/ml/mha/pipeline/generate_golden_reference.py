@@ -35,23 +35,7 @@ def generate_random_data(heads, S_q, S_kv, d, dtype, seed=42, verbose: bool = Fa
         Q = torch.rand(heads, S_q, d, dtype=torch.float32) * val_range
         K = torch.rand(heads, S_kv, d, dtype=torch.float32) * val_range
         V = torch.rand(heads, S_kv, d, dtype=torch.float32) * val_range
-        
-        debug_const = 5
-        
-        Q[0, 0, 0] = debug_const
-        Q[0, 0, 8] = debug_const
-        Q[0, 8, 0] = debug_const
-        Q[0, 8, 8] = debug_const
-        
-        K[0, 0, 0] = debug_const
-        K[0, 0, 8] = debug_const
-        K[0, 8, 0] = debug_const
-        K[0, 8, 8] = debug_const
-        
-        V[0, 0, 0] = debug_const
-        V[0, 0, 8] = debug_const
-        V[0, 8, 0] = debug_const
-        V[0, 8, 8] = debug_const
+
     else:
         # For integer types, use uniform distribution
         if dtype == "i8":

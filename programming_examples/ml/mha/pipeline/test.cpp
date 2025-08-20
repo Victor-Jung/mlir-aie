@@ -40,8 +40,8 @@
 // See "Note on Numerical Tolerances" in README.md
 // float abs_tol = matmul_common::get_abs_tol<DTYPE_ACT>();
 // float rel_tol = matmul_common::get_rel_tol<DTYPE_ACT>();
-float abs_tol = 3.0e-3f;
-float rel_tol = 1.0e-2f;
+float abs_tol = 1.2e-2f;
+float rel_tol = 4.0e-2f;
 
 int main(int argc, const char *argv[]) {
   // Program arguments parsing

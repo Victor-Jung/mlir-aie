@@ -60,14 +60,16 @@ extern "C" {
         // ::aie::set_saturation(aie::saturation_mode::saturate);
         ::aie::set_rounding(ROUNDING_MODE);
 
+        // 16: O dims = [(4, 64), (4, 8), (2, 32), (8, 1)]
+        // 64: O dims = [(16, 256), (4, 8), (8, 32), (8, 1)]
         // VJUNG: Scale O_{i-1} by 1/exp(m_{i-1} - m_{i}) store in scale_buffer[3*B_q:3*B_q + B_q]
         // VJUNG: Skip this for the first iteration as 1/exp(m_{i-1} - m_{i}) degenerates to inf due to m intizalized to -inf
         if (first_iter != 0) {
-            for(int32_t l = 0; l < 4; l++){
+            for(int32_t l = 0; l < 16; l++){
                 for(int32_t k = 0; k < 4; k++){ // Iterate for 4 rows 
-                    for(int32_t j = 0; j < 2; j++){ // Each row is broken down into 2 blocks of 8
+                    for(int32_t j = 0; j < 8; j++){ // Each row is broken down into 2 blocks of 8
                         for (int32_t i = 0; i < 8; i++) {
-                            out[i + j*32 + k*8 + l*64] = out[i + j*32 + k*8 + l*64] * scale_buffer[3*B_q + (k + l*4)];
+                            out[i + j*32 + k*8 + l*256] = out[i + j*32 + k*8 + l*256] * scale_buffer[3*B_q + (k + l*4)];
                         }
                     }
                 }
@@ -87,11 +89,11 @@ extern "C" {
         // VJUNG: TODO: Make this generic for every tile size
         // VJUNG: Need to scale depending on the data layout at the output of GEMM
         // VJUNG: Scale O_{i} by 1/l_{i} 
-        for(int32_t l = 0; l < 4; l++){
-            for(int32_t k = 0; k < 4; k++){ // Iterate for 4 rows 
-                for(int32_t j = 0; j < 2; j++){ // Each row is broken down into 2 blocks of 8
+        for(int32_t l = 0; l < 16; l++){
+            for(int32_t k = 0; k < 4; k++){ // Iterate for 4 rows
+                for(int32_t j = 0; j < 8; j++){ // Each row is broken down into 2 blocks of 8
                     for (int32_t i = 0; i < 8; i++) {
-                        O[i + j*32 + k*8 + l*64] = O[i + j*32 + k*8 + l*64] * aie::inv(scale_buffer[2*B_q + (k + l*4)]);
+                        O[i + j*32 + k*8 + l*256] = O[i + j*32 + k*8 + l*256] * aie::inv(scale_buffer[2*B_q + (k + l*4)]);
                     }
                 }
             }

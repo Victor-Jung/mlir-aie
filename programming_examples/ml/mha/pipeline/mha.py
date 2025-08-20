@@ -398,12 +398,6 @@ def batched_matmul_single_core(
         rt.start(softmax_worker)
         rt.start(matmul_av_worker)
 
-        Q_idx = [i for i in range(heads * num_q_blocks) for _ in range(num_kv_blocks)]  
-        KV_idx = [i + num_kv_blocks*h for h in range(heads) for _ in range(num_q_blocks) for i in range(num_kv_blocks)]
-        
-        print(f"Q_idx: {Q_idx}")
-        print(f"K_idx: {KV_idx}")
-
         for head_idx in range(heads):
             
             for q_block_idx in range(num_q_blocks):
@@ -411,8 +405,6 @@ def batched_matmul_single_core(
                 
                 for kv_block_idx in range(num_kv_blocks):
                     
-                    # Right now I send Q too many times, optimize this later
-                    # rt.fill(inQ.prod(), Q, tap=Q_tiles[q_block_idx], placement = Tile(col = 0, row = 0))
                     rt.fill(inK.prod(), K, tap=K_tiles[head_idx*num_kv_blocks + kv_block_idx], placement = Tile(col = 0, row = 0))
                     rt.fill(inV.prod(), V, tap=V_tiles[head_idx*num_kv_blocks + kv_block_idx], placement = Tile(col = 1, row = 0))
                     
